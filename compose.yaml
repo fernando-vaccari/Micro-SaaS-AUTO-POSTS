@@ -1,0 +1,22 @@
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env
+    environment:
+      DATA_DIR: /app/.data
+    ports:
+      - "${AUTOPOSTS_BIND_IP:-127.0.0.1}:${AUTOPOSTS_PORT:-8000}:8000"
+    volumes:
+      - autoposts-data:/app/.data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 256
+    stop_grace_period: 360s
+
+volumes:
+  autoposts-data:
