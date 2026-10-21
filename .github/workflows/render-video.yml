@@ -1,0 +1,55 @@
+name: Gerar video Auto Posts
+
+on:
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: "ID do video"
+        required: true
+        default: "teste-001"
+        type: string
+      topic:
+        description: "Assunto do video"
+        required: true
+        default: "Por que sua empresa precisa de um site?"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Baixar projeto
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Instalar FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg fonts-dejavu-core
+
+      - name: Instalar dependencias
+        run: python -m pip install -r requirements.txt
+
+      - name: Gerar video MP4
+        env:
+          AUTOPOSTS_JOB_ID: ${{ inputs.job_id }}
+          AUTOPOSTS_TOPIC: ${{ inputs.topic }}
+        run: python -m scripts.render_job
+
+      - name: Salvar video
+        uses: actions/upload-artifact@v4
+        with:
+          name: video-autoposts
+          path: artifacts/*.mp4
+          if-no-files-found: error
+          retention-days: 7
