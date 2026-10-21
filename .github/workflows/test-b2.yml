@@ -41,6 +41,7 @@ jobs:
           import boto3
           from urllib.parse import urlparse
           from botocore.config import Config
+          from botocore.handlers import add_expect_header
 
           endpoint = os.environ["B2_ENDPOINT"].strip().strip('"').strip("'")
 
@@ -64,11 +65,14 @@ jobs:
               aws_secret_access_key=os.environ["B2_APPLICATION_KEY"].strip(),
               config=Config(
                   s3={"addressing_style": "path"},
+                  request_checksum_calculation="when_required",
                   connect_timeout=15,
                   read_timeout=30,
                   retries={"max_attempts": 2},
               ),
           )
+
+          s3.meta.events.unregister("before-call.s3", add_expect_header)
 
           arquivo = "testes/conexao-autoposts.txt"
 
@@ -83,14 +87,21 @@ jobs:
 
           print("Upload realizado!", flush=True)
 
-          resposta = s3.get_object(Bucket=bucket, Key=arquivo)
+          resposta = s3.get_object(
+              Bucket=bucket,
+              Key=arquivo,
+          )
+
           conteudo = resposta["Body"].read()
 
           assert conteudo == b"Auto Posts conectado!"
 
           print("Leitura confirmada!", flush=True)
 
-          s3.delete_object(Bucket=bucket, Key=arquivo)
+          s3.delete_object(
+              Bucket=bucket,
+              Key=arquivo,
+          )
 
           print("Arquivo de teste removido!", flush=True)
           print("BACKBLAZE B2 FUNCIONANDO!", flush=True)
