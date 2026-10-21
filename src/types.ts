@@ -1,0 +1,13 @@
+export type User = { id: string; name: string; email: string; plan: string; created_at: string };
+export type Session = { user: User | null; csrf_token: string; integrations: { instagram: boolean; stripe: boolean; ai?: boolean }; limits: { free_posts: number; pro_posts: number; max_duration?: number }; setup?: { secret: boolean; public_url: boolean; browser: boolean }; platform?: Record<string, unknown> };
+export type Account = { id: string; provider: string; platform_username: string; external_id: string; expires_at?: string; created_at: string };
+export type Scene = { text: string; asset_id?: string | null };
+export type Post = { id: string; title: string; caption: string; scenes: Scene[]; duration: number; theme: string; status: string; scheduled_at: string | null; account_id: string | null; video_url: string | null; last_error?: string | null; media_id?: string; created_at: string; updated_at: string };
+export type PostInput = { title: string; caption: string; scenes: Scene[]; duration: number; theme: string };
+export type Asset = { id: string; original_name: string; media_type: string; kind: string; size: number; created_at: string; url: string };
+export type Campaign = { id: string; name: string; niche: string; audience: string; tone: string; cta: string; topics: string[]; mode: 'templates' | 'ai'; account_id: string | null; timezone: string; times: string[]; enabled: boolean; next_run_at: string | null; last_error?: string | null; created_at: string };
+export type CampaignInput = Omit<Campaign, 'id' | 'created_at' | 'next_run_at' | 'last_error'>;
+export type Run = { id: string; status: string; preview: boolean | number; post_id?: string | null; error?: string | null; created_at: string };
+export type Dashboard = { stats: { total: number; scheduled: number; published: number; rendering: number }; accounts: Account[]; posts: Post[]; usage: { used: number; limit: number; plan: string }; platform?: Record<string, unknown> };
+export type Capabilities = { ai: boolean; instagram: boolean; public_url: boolean; browser?: boolean };
+export type Workspace = { dashboard: Dashboard; posts: Post[]; campaigns: Campaign[]; assets: Asset[]; capabilities: Capabilities };

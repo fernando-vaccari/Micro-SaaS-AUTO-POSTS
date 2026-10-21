@@ -1,0 +1,34 @@
+PRAGMA foreign_keys = ON;
+CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, name TEXT NOT NULL, password_hash TEXT NOT NULL, plan TEXT NOT NULL DEFAULT 'free' CHECK(plan IN ('free','pro')), stripe_customer_id TEXT UNIQUE, stripe_subscription_id TEXT, created_at TEXT NOT NULL);
+CREATE TABLE sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, csrf_hash TEXT NOT NULL, expires_at TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE INDEX sessions_expiry ON sessions(expires_at);
+CREATE INDEX sessions_owner ON sessions(user_id);
+CREATE TABLE accounts (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, provider TEXT NOT NULL, platform_username TEXT NOT NULL, external_id TEXT NOT NULL, access_token TEXT NOT NULL, expires_at TEXT, created_at TEXT NOT NULL, UNIQUE(user_id,provider,external_id));
+CREATE INDEX accounts_owner ON accounts(user_id);
+CREATE TABLE posts (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, title TEXT NOT NULL, caption TEXT NOT NULL DEFAULT '', scenes TEXT NOT NULL, duration INTEGER NOT NULL CHECK(duration BETWEEN 6 AND 15), theme TEXT NOT NULL DEFAULT 'violet', status TEXT NOT NULL DEFAULT 'draft', scheduled_at TEXT, account_id TEXT REFERENCES accounts(id) ON DELETE SET NULL, public_token TEXT NOT NULL UNIQUE, output_path TEXT, ready_at TEXT, container_id TEXT, publish_phase TEXT, publish_lease_until TEXT, media_id TEXT, last_error TEXT, retry_count INTEGER NOT NULL DEFAULT 0, next_attempt_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE INDEX posts_owner_created ON posts(user_id,created_at);
+CREATE INDEX posts_due ON posts(status,scheduled_at,next_attempt_at);
+CREATE TABLE post_usage (user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, month TEXT NOT NULL, count INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(user_id,month));
+CREATE TRIGGER posts_monthly_quota BEFORE INSERT ON posts BEGIN
+  SELECT CASE WHEN COALESCE((SELECT count FROM post_usage WHERE user_id=NEW.user_id AND month=substr(NEW.created_at,1,7)),0) >= CASE WHEN (SELECT plan FROM users WHERE id=NEW.user_id)='pro' THEN 100 ELSE 3 END THEN RAISE(ABORT,'MONTHLY_QUOTA') END;
+END;
+CREATE TRIGGER posts_monthly_usage AFTER INSERT ON posts BEGIN
+  INSERT INTO post_usage(user_id,month,count) VALUES(NEW.user_id,substr(NEW.created_at,1,7),1) ON CONFLICT(user_id,month) DO UPDATE SET count=count+1;
+END;
+CREATE TABLE assets (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, filename TEXT NOT NULL, original_name TEXT NOT NULL, media_type TEXT NOT NULL, kind TEXT NOT NULL, size INTEGER NOT NULL, created_at TEXT NOT NULL);
+CREATE INDEX assets_owner ON assets(user_id);
+CREATE TABLE media_files (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, kind TEXT NOT NULL, media_type TEXT NOT NULL, size INTEGER NOT NULL DEFAULT 0, complete INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL);
+CREATE INDEX media_owner ON media_files(user_id,kind);
+CREATE TABLE render_jobs (id TEXT PRIMARY KEY REFERENCES posts(id) ON DELETE CASCADE, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, status TEXT NOT NULL DEFAULT 'queued', token_hash TEXT, expires_at TEXT, started_at TEXT, finished_at TEXT, error TEXT);
+CREATE INDEX render_jobs_queue ON render_jobs(status,started_at);
+CREATE TABLE campaigns (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, name TEXT NOT NULL, niche TEXT NOT NULL, audience TEXT NOT NULL DEFAULT '', tone TEXT NOT NULL DEFAULT 'didático', cta TEXT NOT NULL DEFAULT '', topics TEXT NOT NULL, mode TEXT NOT NULL, account_id TEXT REFERENCES accounts(id) ON DELETE SET NULL, timezone TEXT NOT NULL, times TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 0, next_run_at TEXT, generation_index INTEGER NOT NULL DEFAULT 0, last_error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE INDEX campaigns_owner ON campaigns(user_id,created_at);
+CREATE INDEX campaigns_due ON campaigns(enabled,next_run_at);
+CREATE TABLE automation_runs (id TEXT PRIMARY KEY, campaign_id TEXT NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, scheduled_for TEXT NOT NULL, preview INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL, post_id TEXT REFERENCES posts(id) ON DELETE SET NULL, topic_index INTEGER NOT NULL DEFAULT 0, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(campaign_id,scheduled_for));
+CREATE INDEX runs_jobs ON automation_runs(status,created_at);
+CREATE INDEX runs_owner ON automation_runs(user_id,campaign_id,created_at);
+CREATE TABLE global_usage (day TEXT NOT NULL, kind TEXT NOT NULL, count INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(day,kind));
+CREATE TABLE webhook_events (id TEXT PRIMARY KEY, created_at TEXT NOT NULL);
+CREATE TABLE app_config (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE auth_attempts (key TEXT PRIMARY KEY, count INTEGER NOT NULL DEFAULT 0, expires_at TEXT NOT NULL);
+CREATE INDEX auth_attempts_expiry ON auth_attempts(expires_at);

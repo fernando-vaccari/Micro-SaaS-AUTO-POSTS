@@ -1,0 +1,15 @@
+# Apenas desenvolvimento local. Copie para .dev.vars e gere APP_SECRET aleatório.
+# Não use placeholders de proxy: a chave precisa existir localmente para AES-GCM/HMAC.
+APP_SECRET=
+# Em produção pode ser inferido da primeira sessão; configure a origem workers.dev
+# explicitamente para Cron/OAuth, sobretudo antes do primeiro acesso.
+APP_URL=
+INSTAGRAM_APP_ID=
+INSTAGRAM_APP_SECRET=
+# Opcional: padrão APP_URL + /api/integrations/instagram/callback
+INSTAGRAM_REDIRECT_URI=
+INSTAGRAM_GRAPH_VERSION=v25.0
+# Cobrança opcional; não é necessária para usar o aplicativo no plano gratuito.
+STRIPE_SECRET_KEY=
+STRIPE_WEBHOOK_SECRET=
+STRIPE_PRICE_ID=
