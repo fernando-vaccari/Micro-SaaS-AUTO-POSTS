@@ -1,0 +1,71 @@
+name: Testar armazenamento Backblaze B2
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  testar:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Instalar biblioteca do Backblaze
+        run: python -m pip install boto3
+
+      - name: Testar envio e leitura de arquivo
+        env:
+          B2_KEY_ID: ${{ secrets.B2_KEY_ID }}
+          B2_APPLICATION_KEY: ${{ secrets.B2_APPLICATION_KEY }}
+          B2_BUCKET_NAME: ${{ vars.B2_BUCKET_NAME }}
+          B2_ENDPOINT: ${{ vars.B2_ENDPOINT }}
+        run: |
+          python - <<'PY'
+          import os
+          import boto3
+          from urllib.parse import urlparse
+
+          endpoint = os.environ["B2_ENDPOINT"].strip()
+          if not endpoint.startswith("https://"):
+              endpoint = "https://" + endpoint
+
+          host = urlparse(endpoint).hostname or ""
+          if not host.startswith("s3.") or not host.endswith(".backblazeb2.com"):
+              raise ValueError("Endpoint B2 inválido")
+
+          region = host.removeprefix("s3.").removesuffix(".backblazeb2.com")
+
+          s3 = boto3.client(
+              "s3",
+              endpoint_url=endpoint,
+              region_name=region,
+              aws_access_key_id=os.environ["B2_KEY_ID"],
+              aws_secret_access_key=os.environ["B2_APPLICATION_KEY"],
+          )
+
+          bucket = os.environ["B2_BUCKET_NAME"]
+          arquivo = "testes/conexao-autoposts.txt"
+
+          print("Testando armazenamento...")
+
+          s3.put_object(
+              Bucket=bucket,
+              Key=arquivo,
+              Body=b"Auto Posts conectado!",
+              ContentType="text/plain",
+          )
+
+          resposta = s3.get_object(Bucket=bucket, Key=arquivo)
+          conteudo = resposta["Body"].read()
+
+          assert conteudo == b"Auto Posts conectado!"
+
+          print("Upload realizado!")
+          print("Leitura confirmada!")
+
+          s3.delete_object(Bucket=bucket, Key=arquivo)
+
+          print("Arquivo de teste removido!")
+          print("BACKBLAZE B2 FUNCIONANDO!")
+          PY
