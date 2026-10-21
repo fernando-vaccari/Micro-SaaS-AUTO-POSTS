@@ -36,15 +36,23 @@ jobs:
 
           region = host.removeprefix("s3.").removesuffix(".backblazeb2.com")
 
+          from botocore.config import Config
+
           s3 = boto3.client(
               "s3",
               endpoint_url=endpoint,
               region_name=region,
-              aws_access_key_id=os.environ["B2_KEY_ID"],
-              aws_secret_access_key=os.environ["B2_APPLICATION_KEY"],
+              aws_access_key_id=os.environ["B2_KEY_ID"].strip(),
+              aws_secret_access_key=os.environ["B2_APPLICATION_KEY"].strip(),
+              config=Config(
+                  s3={"addressing_style": "path"},
+                  connect_timeout=15,
+                  read_timeout=30,
+                  retries={"max_attempts": 2},
+            ),
           )
 
-          bucket = os.environ["B2_BUCKET_NAME"]
+          bucket = os.environ["B2_BUCKET_NAME"].strip().strip('"').strip("'")
           arquivo = "testes/conexao-autoposts.txt"
 
           print("Testando armazenamento...")
