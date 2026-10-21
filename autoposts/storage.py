@@ -9,6 +9,7 @@ import hashlib
 import os
 from pathlib import Path
 import re
+import unicodedata
 from urllib.parse import urlsplit
 
 import boto3
@@ -20,6 +21,55 @@ class StorageError(Exception):
     def __init__(self, message: str, *, code='storage_error', retryable=False):
         super().__init__(message)
         self.code, self.retryable = code, retryable
+
+def _endpoint(value):
+    """Validate non-secret configuration without echoing a malformed URL."""
+    endpoint=value.strip().strip('"\'').strip()
+    if '://' not in endpoint:
+        endpoint='https://'+endpoint
+    try:
+        parsed=urlsplit(endpoint)
+        match=re.fullmatch(r's3\.([a-z0-9-]+)\.backblazeb2\.com',parsed.hostname or '')
+        valid=(match and parsed.scheme=='https' and not parsed.username and not parsed.password
+               and parsed.port in (None,443) and parsed.path in ('','/') and not parsed.query and not parsed.fragment
+               and not any(c.isspace() for c in endpoint))
+        if valid:return f'https://{parsed.hostname}',match[1]
+    except ValueError:
+        pass
+    raise StorageError('B2_ENDPOINT deve ser o endpoint HTTPS S3 do B2, sem bucket, caminho ou credenciais.',code='configuration')
+
+
+def safe_environment_diagnostics(environ=None):
+    """Allowlisted metadata only: never values, fragments or fingerprints of keys."""
+    environ=os.environ if environ is None else environ
+    result={}
+    for name in ('B2_KEY_ID','B2_APPLICATION_KEY'):
+        value=environ.get(name,'')
+        facts={
+            'defined':bool(value),
+            'has_whitespace':any(c.isspace() for c in value),
+            'has_line_breaks':any(c in value for c in ('\r','\n')),
+            'has_surrounding_whitespace':value!=value.strip(),
+            'has_non_ascii':not value.isascii(),
+            'has_control_or_invisible_characters':any(unicodedata.category(c).startswith('C') for c in value),
+            'has_surrounding_quotes':bool(value) and (value[0] in '\"\'' or value[-1] in '\"\''),
+            'has_variable_label':value.startswith(name+'='),
+        }
+        if name=='B2_KEY_ID':facts['character_count']=len(value)
+        result[name]=facts
+    expected='https://s3.us-east-005.backblazeb2.com'
+    result['endpoint']={'defined':bool(environ.get('B2_ENDPOINT','')),'valid':False,
+                        'matches_expected':False,'expected':expected,'region_matches_endpoint':False}
+    try:
+        normalized,region=_endpoint(environ.get('B2_ENDPOINT',''))
+        result['endpoint'].update(valid=True,matches_expected=normalized==expected,
+                                  region_matches_endpoint=environ.get('B2_REGION',region).strip()==region)
+    except StorageError:
+        pass
+    result['bucket']={'defined':bool(environ.get('B2_BUCKET_NAME','')),
+                      'matches_expected':environ.get('B2_BUCKET_NAME','').strip()=='autoposts-media-fernando'}
+    return result
+
 
 @dataclass(frozen=True, repr=False)
 class B2Config:
@@ -35,25 +85,19 @@ class B2Config:
             return os.environ.get(name, '').strip().strip('"\'').strip()
         endpoint = variable('B2_ENDPOINT')
         bucket = variable('B2_BUCKET_NAME')
-        key_id = os.environ.get('B2_KEY_ID', '').strip()
-        key = os.environ.get('B2_APPLICATION_KEY', '').strip()
+        key_id = os.environ.get('B2_KEY_ID', '')
+        key = os.environ.get('B2_APPLICATION_KEY', '')
         if not all((endpoint, bucket, key_id, key)):
             raise StorageError('Configure B2_ENDPOINT, B2_BUCKET_NAME, B2_KEY_ID e B2_APPLICATION_KEY.', code='configuration')
         for name, value in [('B2_KEY_ID', key_id), ('B2_APPLICATION_KEY', key)]:
-            if any(c.isspace() for c in value) or value[0] in '\"\'' or value[-1] in '\"\'' or value.startswith(name+'='):
-                raise StorageError(f'{name} deve conter somente o valor da Application Key, sem aspas, rótulo ou quebra de linha.', code='configuration')
-        if not endpoint.startswith('https://'):
-            endpoint = 'https://' + endpoint
-        parsed = urlsplit(endpoint)
-        match = re.fullmatch(r's3\.([a-z0-9-]+)\.backblazeb2\.com', parsed.hostname or '')
-        if not match or parsed.scheme != 'https' or parsed.username or parsed.password or parsed.port not in (None, 443) or parsed.path not in ('', '/') or parsed.query or parsed.fragment:
-            raise StorageError('B2_ENDPOINT deve ser o endpoint HTTPS S3 do B2, sem bucket, caminho ou credenciais.', code='configuration')
+            if any(c.isspace() for c in value) or not value.isascii() or any(unicodedata.category(c).startswith('C') for c in value) or value[0] in '\"\'' or value[-1] in '\"\'' or value.startswith(name+'='):
+                raise StorageError(f'{name} deve conter somente o valor da Application Key, sem aspas, rótulo, espaços, quebra de linha ou caracteres invisíveis.', code='configuration')
+        endpoint,region = _endpoint(endpoint)
         if not re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9.-]{4,61}[a-zA-Z0-9]', bucket):
             raise StorageError('B2_BUCKET_NAME inválido; use somente o nome do bucket, sem URL.', code='configuration')
-        region = match[1]
         if os.environ.get('B2_REGION', region).strip() != region:
             raise StorageError('B2_REGION deve corresponder à região no B2_ENDPOINT.', code='configuration')
-        return cls(f'https://{parsed.hostname}', region, bucket, key_id, key)
+        return cls(endpoint, region, bucket, key_id, key)
 
 def configured():
     return all(os.environ.get(n, '').strip() for n in ('B2_ENDPOINT','B2_BUCKET_NAME','B2_KEY_ID','B2_APPLICATION_KEY'))
@@ -63,7 +107,7 @@ def _failure(exc):
         code = str(exc.response.get('Error', {}).get('Code', 'provider_error'))
         # Do not propagate message, request URL, authorization headers or key IDs.
         if code in {'InvalidAccessKeyId', 'MalformedAccessKeyId'}:
-            return StorageError('B2 rejeitou o Key ID. Verifique se B2_KEY_ID é o keyID da nova Application Key S3, e não o Account ID ou o nome da chave.', code=code)
+            return StorageError('O endpoint S3 do B2 não reconheceu o Key ID enviado. Consulte o diagnóstico de recebimento, o endpoint/região e o escopo dos Secrets no GitHub; formato válido não confirma a validade da chave no provedor.', code=code)
         if code in {'SignatureDoesNotMatch', 'InvalidToken'}:
             return StorageError('A assinatura foi recusada. Verifique o par keyID/applicationKey e a região do bucket.', code=code)
         if code in {'AccessDenied', 'Unauthorized'}:
