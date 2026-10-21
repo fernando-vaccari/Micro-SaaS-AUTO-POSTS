@@ -16,9 +16,10 @@ def main():
         f"{api_url}/api/jobs/next",
         headers={
             "Authorization": f"Bearer {api_secret}",
-            "Accept": "application/json",
-        },
-    )
+            "Accept": "*/*",
+            "User-Agent": "curl/8.5.0",
+    },
+)
 
     with urllib.request.urlopen(request, timeout=20) as response:
         data = json.load(response)
