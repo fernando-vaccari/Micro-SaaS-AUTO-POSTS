@@ -11,6 +11,21 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Diagnosticar conexao Backblaze
+        env:
+          B2_ENDPOINT: ${{ vars.B2_ENDPOINT }}
+        run: |
+          ENDPOINT="${B2_ENDPOINT#https://}"
+
+          echo "Testando conexao HTTPS..."
+          curl -sS -o /dev/null \
+            --connect-timeout 10 \
+            --max-time 20 \
+            -w "HTTP: %{http_code}\n" \
+            "https://$ENDPOINT"
+
+          echo "Verificando biblioteca Python..."
+          python -m pip show boto3 botocore | grep -E "Name:|Version:"
       - name: Instalar biblioteca do Backblaze
         run: python -m pip install boto3
 
