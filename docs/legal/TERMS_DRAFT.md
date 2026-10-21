@@ -14,7 +14,7 @@ O cliente deve revisar previamente o nicho, as instruções, os materiais enviad
 
 ## Planos e cobrança
 
-**[Preencher preços, periodicidade, cotas, renovação, cancelamento, reembolso, tributos e canais de suporte.]** O código inicial aplica cotas mensais de criação de vídeos e inclui prévias no consumo. Não ofereça preços ou condições que ainda não estejam configurados e testados.
+**[Preencher preços, periodicidade, cotas, renovação, cancelamento, reembolso, tributos e canais de suporte.]** O aplicativo aplica limites separados para vídeos e imagens; prévias e regenerações de resultados prontos consomem créditos. O ciclo pago acompanha o período confirmado pelo Stripe. Starter pode oferecer sete dias de teste com cartão e e-mail confirmado, uma vez por identidade de e-mail registrada. Não ofereça preços ou condições que ainda não estejam configurados e testados.
 
 ## Dependências e disponibilidade
 

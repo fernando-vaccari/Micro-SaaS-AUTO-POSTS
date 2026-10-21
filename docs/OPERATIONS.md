@@ -1,102 +1,89 @@
-# Operação e publicação
+# Configuração, deploy e operação
 
-## Limites desta entrega
+## Backblaze B2 — prioridade de configuração
 
-O fluxo principal é: campanha autorizada → roteiro → vídeo MP4 → fila persistente → publicação no Instagram. A versão inicial produz vídeos com texto sobre fundos ou imagens fornecidas; não gera locução nem cenas cinematográficas. O modo de textos fornecidos funciona sem IA; o modo IA envia o contexto da campanha à API OpenAI e depende de uma chave válida e de saldo.
+No painel Backblaze, abra Buckets e confirme o bucket **privado** `autoposts-media-fernando`, região `us-east-005`. Em Application Keys crie/consulte uma chave S3 para esse bucket, com permissões `listFiles`, `readFiles`, `writeFiles` e `deleteFiles`. O teste usa `diagnostics/`; a aplicação usa `users/`. Uma chave limitada a outro prefixo impedirá operações. Não use a master key, Account ID, nome da chave ou chave de outro bucket.
 
-O servidor precisa permanecer ligado para gerar e publicar nos horários. A aplicação usa SQLite e arquivos locais, com um processo de API e seus agendadores internos. Execute uma instância com `--workers 1`. Os bloqueios de processo evitam dois consumidores no mesmo diretório; não tornam a arquitetura distribuída. Escalar para múltiplos servidores exige outro desenho de armazenamento e fila.
+No GitHub, Settings → Secrets and variables → Actions:
 
-Os planos são cotas de criação mensal: gratuito com 3 vídeos e Pro com 100. Gerações de prévia entram na cota. A ativação do plano depende de notificações verificadas do Stripe.
+| Tipo | Nome | Configuração |
+|---|---|---|
+| Secret | B2_KEY_ID | `keyID` da Application Key |
+| Secret | B2_APPLICATION_KEY | `applicationKey` do mesmo par |
+| Variable | B2_BUCKET_NAME | autoposts-media-fernando |
+| Variable | B2_ENDPOINT | s3.us-east-005.backblazeb2.com |
 
-## Configurar a hospedagem
+Não adicione aspas, rótulos ou quebras de linha. Não envie chaves pelo chat. O SDK assina S3 localmente: precisa dos valores reais do par no processo seguro; um placeholder de proxy HTTP não é uma chave S3 utilizável.
 
-1. Escolha um host Linux com disco persistente e capacidade para FFmpeg. O projeto inclui `Dockerfile` e `compose.yaml`; nenhum serviço de nuvem ou conta paga é criado por esses arquivos.
-2. Configure domínio e HTTPS em um proxy reverso. Encaminhe ao serviço na porta 8000, preserve o cabeçalho `Host` e permita o tráfego de `/api`, `/media` e arquivos estáticos. O proxy deve suportar uploads de pelo menos 10 MB e entrega de vídeos.
-3. Configure `APP_ENV=production`, `APP_BASE_URL` com a origem HTTPS pública e `APP_SECRET` com um segredo aleatório estável de pelo menos 32 caracteres. Use o gerenciador seguro de segredos da hospedagem; não inclua valores no Git.
-4. Garanta persistência de `DATA_DIR`. O Compose usa o volume `autoposts-data`; remover esse volume apaga banco, uploads e vídeos. Não execute `docker compose down --volumes` para uma atualização normal.
-5. Inicie uma instância e valide `/health`, cadastro/login e uma prévia de campanha antes de conectar contas reais. Reinicie o processo e confirme que os dados permanecem.
+Resultado real observado em 21/10/2026: [run 39643387400](https://github.com/fernando-vaccari/Micro-SaaS-AUTO-POSTS/actions/runs/39643387400), job 119372519319, falhou no upload com diagnóstico sanitizado de rejeição do Key ID. Não foi demonstrado um roundtrip bem sucedido. Os logs completos autenticados da execução anterior não estavam acessíveis neste ambiente; o novo workflow expôs a anotação segura do erro observado.
 
-A URL pública deve servir o vídeo em `/media/{token}.mp4` para a Meta buscar. O token nessa URL concede acesso ao arquivo, portanto trate a URL como privada e evite gravá-la em analytics ou logs externos. Não coloque todo o aplicativo atrás de uma autenticação do proxy que impeça a Meta de acessar essa rota. O painel e o download autenticado continuam exigindo a sessão do dono.
+Após corrigir o par nos Secrets, abra Actions → Testar armazenamento Backblaze B2 → Run workflow → branch `feat/saas-b2-finish`. Sucesso exige upload pequeno, HEAD com tamanho/SHA-256, GET e comparação exata, purga de versões e confirmação de exclusão. Procure `B2_ROUNDTRIP_OK`. O teste não imprime valores secretos. Sem sucesso real, mantenha a integração em validação.
 
-Publicar uma configuração de ambiente de desenvolvimento não implanta automaticamente o SaaS em uma hospedagem pública. O deploy externo, o domínio e os serviços pagos devem ser revisados e autorizados separadamente.
+No servidor, configure as mesmas quatro variáveis B2 e `STORAGE_BACKEND=b2`. `B2_REGION` opcional deve coincidir com o endpoint. `InvalidAccessKeyId` é identificação; `SignatureDoesNotMatch` pede conferir par/região; `AccessDenied` pede bucket/prefixo/permissões. Para erros de transporte, verifique CA/proxy e endpoint HTTPS. Não desative TLS. A configuração usa boto3/botocore fixados, SigV4/path, conteúdo com tamanho/MD5 e checksums when_required.
 
-### Construção atrás de proxy com CA corporativa
+## Servidor e HTTPS
 
-Se a rede usa uma autoridade certificadora própria, o `pip` dentro da construção Docker pode rejeitar a cadeia TLS. Forneça o bundle de CAs confiável administrado pelo ambiente como segredo de construção BuildKit; não use `--trusted-host`, não desative TLS e não copie credenciais para a imagem.
+Requer CPU para FFmpeg e disco persistente. Comece com um único serviço/volume. Para desenvolvimento: `.env.example` → `.env`, `./scripts/install.sh`, `./scripts/start.sh`. Sem SMTP/B2/Meta/Stripe é possível validar a interface e mídia local, mas não as operações externas.
 
-```bash
-docker build --secret id=build_ca,src=/etc/ssl/certs/ca-certificates.crt -t autoposts:local .
-```
+Para um host público:
 
-Esse caminho é o bundle público de confiança do host no ambiente Linux atual; em outra máquina, use o bundle indicado pelo administrador da rede. O Dockerfile passa o arquivo temporário ao `pip` por `PIP_CERT` somente quando o segredo foi fornecido. O arquivo montado não é copiado para a imagem e não inclui os arquivos `.env` do projeto. Fora dessa rede, `docker build -t autoposts:local .` continua usando a verificação TLS padrão.
+1. Instale Docker Engine e Compose plugin; permita entrada 80/443.
+2. Crie DNS A/AAAA para o host. Cloudflare pode gerenciar DNS; comece com DNS only para emitir certificado e, se ativar proxy, use Full (strict). Não use Flexible.
+3. Configure `.env`: `APP_ENV=production`, `APP_BASE_URL=https://seu-dominio`, `AUTOPOSTS_DOMAIN=seu-dominio`, `ACME_EMAIL` válido, `STORAGE_BACKEND=b2` e as integrações abaixo. Gere `APP_SECRET` aleatório de pelo menos 32 caracteres em um gerenciador de senhas e mantenha-o estável. Não cole saídas secretas em tickets/logs.
+4. Execute `docker compose --profile public up -d --build`. O Caddy provisiona TLS nesse host real; não foi emitido certificado nesta entrega. Não exponha a porta 8000 na internet.
+5. Confirme `docker compose ps`, logs sanitizados e GET HTTPS `/health`. O health verifica banco/FFmpeg, não credenciais externas. Execute os testes reais de B2/SMTP/Stripe/Meta antes de abrir vendas.
 
-Essa opção cobre o download de dependências na construção. Uma hospedagem que também exija CA própria durante a execução deve fornecer seu bundle de confiança separadamente ao processo, por montagem somente leitura e configuração de confiança suportada; não suponha que um segredo temporário de construção configure a rede de execução.
+`docker compose up -d --build` inicia apenas o app em loopback. O volume `autoposts-data` contém banco e cache; não execute `down -v` em produção. Imagem roda com usuário sem privilégios. Encerramento aguarda trabalho em andamento; não use vários workers Uvicorn ou réplicas no mesmo volume.
 
-## Instagram Login e permissões Meta
+Em ambientes com CA empresarial no build, use um bundle confiável via BuildKit: `docker build --secret id=build_ca,src=/caminho/ca-certificates.crt -t autoposts .`. Não desative validação de certificados.
 
-Cadastre um aplicativo Meta compatível com **Instagram API with Instagram Login**. Use uma conta profissional do Instagram que tenha acesso autorizado ao aplicativo. O fluxo solicita `instagram_business_basic` e `instagram_business_content_publish`.
+## SMTP
 
-Configure os seguintes valores no ambiente do servidor:
+Crie um remetente verificado num serviço SMTP de sua escolha. Configure `SMTP_HOST`, `SMTP_PORT`, `SMTP_MODE=starttls` (587) ou `ssl` (465), `SMTP_FROM`, `SMTP_USERNAME` e `SMTP_PASSWORD` no host. Verifique SPF/DKIM/DMARC conforme o fornecedor. Recuperação e confirmação exigem entrega real; tokens expiram em 30 minutos, uso único, hash no banco, sem exposição em logs. Trocar senha invalida sessões. Sem SMTP, o painel mostra erro de configuração.
 
-- `INSTAGRAM_APP_ID` e `INSTAGRAM_APP_SECRET` do mesmo aplicativo.
-- `INSTAGRAM_REDIRECT_URI` igual a `APP_BASE_URL` seguido de `/api/integrations/instagram/callback`, também cadastrado exatamente no aplicativo Meta.
-- `INSTAGRAM_GRAPH_VERSION` correspondente à versão suportada pelo aplicativo; o padrão do código é `v25.0`.
+## Instagram oficial
 
-Para uso além das contas de desenvolvimento/teste, a Meta pode exigir aplicativo em modo ativo, revisão das permissões, verificação empresarial, domínio, política de privacidade e instruções de exclusão de dados. Confirme os requisitos atuais no painel Meta. Ter as variáveis configuradas não garante que essas permissões foram concedidas.
+No Meta for Developers crie um app elegível com **Instagram API with Instagram Login**, usando conta profissional. Consulte a documentação vigente: https://developers.facebook.com/docs/instagram-platform/instagram-api-with-instagram-login/ e seus requisitos de publicação/revisão.
 
-Cada cliente deve conectar sua própria conta pelo botão no painel e consentir no fluxo OAuth. Não copie tokens de outras contas nem solicite senhas do Instagram. Os tokens são criptografados no banco com uma chave derivada de `APP_SECRET`. Alterar ou perder `APP_SECRET` torna os tokens anteriores ilegíveis; a recuperação exige restaurar a chave original ou reconectar as contas.
+Configure `INSTAGRAM_APP_ID`, `INSTAGRAM_APP_SECRET`, `INSTAGRAM_GRAPH_VERSION` (v25.0 por padrão) e `INSTAGRAM_REDIRECT_URI=https://seu-dominio/api/integrations/instagram/callback`. Cadastre exatamente o redirect no painel Meta, HTTPS sem divergências. Publique `/privacy`, `/terms` e `/data-deletion`, preenchendo a identificação do operador e revisando os documentos antes da revisão do app.
 
-Os scripts e o contêiner desativam o log de acesso do Uvicorn para não registrar códigos OAuth, estado da autorização ou URLs de mídia. Aplique a mesma regra no proxy reverso: não registre query strings dos callbacks ou os tokens da rota de mídia. Use eventos de aplicação sem tokens, cookies, segredos e corpos sensíveis para observar as falhas.
+O código solicita `instagram_business_basic` e `instagram_business_content_publish`; verifique permissões disponibilizadas ao seu app, teste com contas/roles elegíveis e solicite Advanced Access/revisão para atender terceiros. No painel AUTO POSTS, abra Instagram → Conectar → autorize na Meta → confirme conta e permissões. Nunca peça a senha Instagram.
 
-Tokens e permissões podem expirar ou ser revogados. O código tenta renovar tokens de longa duração próximos da expiração quando já têm idade suficiente para renovação; a API pode rejeitar essa operação. Se o Instagram rejeitar uma publicação, o painel deve exibir a falha e o cliente pode precisar reconectar a conta. A operação 100% automática pressupõe autorização ainda válida, serviço ativo e disponibilidade das APIs; nenhuma integração elimina essas dependências externas.
+Faça primeiro uma prévia, depois autorize explicitamente um conteúdo de teste. Confirme publicação e ID na conta real. Só depois ative campanha: essa ativação autoriza publicações futuras sem aprovar cada post. Imagem/Reels usam contêineres e consulta de processamento antes do publish. Erro ambíguo exige conferir a conta, para evitar duplicação. Desconectar revoga o vínculo local; a revogação também pode ser feita nas configurações Meta.
 
-Destinos HTTPS necessários: `www.instagram.com` para autorização no navegador, `api.instagram.com` para troca do código e `graph.instagram.com` para tokens e publicação. Instalação usa os registries oficiais de pacotes e a construção Docker usa o registry Docker e mirrors Debian.
+## Stripe e quatro planos
 
-## IA
+No Stripe Dashboard, comece em sandbox. Crie quatro produtos/Prices **recorrentes mensais em BRL**: 2999, 6999, 10999 e 15999 centavos. Defina `STRIPE_PRICE_STARTER`, `STRIPE_PRICE_PRO`, `STRIPE_PRICE_BUSINESS`, `STRIPE_PRICE_PREMIUM`, além de `STRIPE_SECRET_KEY`. Se mudar valores PLAN_*, crie Prices correspondentes; produção confere valor/moeda/período antes do checkout.
 
-Configure `AI_API_KEY` no ambiente seguro do servidor e, opcionalmente, `AI_MODEL` (padrão `gpt-4.1-mini`). A chamada usa `api.openai.com`. A geração pode ter custo por uso. Não coloque a chave no navegador, não faça commit e não use valores de demonstração como credenciais.
+Cadastre webhook HTTPS `/api/billing/webhook`; configure seu signing secret `STRIPE_WEBHOOK_SECRET`. Habilite `checkout.session.completed`, `customer.subscription.created`, `customer.subscription.updated`, `customer.subscription.deleted`, `invoice.paid` e `invoice.payment_failed`. Ative Customer Portal com cancelamento, atualização de pagamento e mudanças entre os quatro Prices. Nunca armazene cartões no app.
 
-Revise assuntos, tom, chamadas para ação e direitos sobre o conteúdo antes de ativar uma campanha. Não há revisão humana obrigatória de cada vídeo após a ativação: esse é o comportamento solicitado pelo produto. Se desejar avaliar o resultado primeiro, use a prévia e mantenha a campanha desativada.
+Starter exige e-mail confirmado; o checkout coleta cartão, concede sete dias se o e-mail ainda não usou teste e a assinatura é liberada por webhook. Repetição do checkout reutiliza sessão pendente; a tela permite cancelar essa sessão. A página de sucesso não libera plano. Status de falha/expiração bloqueia uso de produção; cancelamento ao fim do período acompanha o status confirmado pelo Stripe.
 
-## Stripe opcional
+Valide em sandbox: compra dos quatro planos, webhook/replay, ciclo, troca, cancelamento, inadimplência e teste Starter. Depois configure chaves/Prices/webhook de produção conscientemente. Nenhuma cobrança real foi executada nesta entrega. Impostos, reembolso e faturamento fiscal precisam de definição do operador.
 
-Configure um produto e um preço recorrente no Stripe, primeiro no modo de teste. Preencha `STRIPE_SECRET_KEY` e `STRIPE_PRICE_ID` da mesma conta e modo. Registre o endpoint público `APP_BASE_URL/api/billing/webhook` e configure seu `STRIPE_WEBHOOK_SECRET`.
+## IA e renderizador remoto opcionais
 
-O aplicativo verifica a assinatura do corpo original e registra identificadores de eventos para impedir reaplicação. O retorno do navegador após checkout não promove a conta. Cadastre os eventos `checkout.session.completed`, `customer.subscription.created`, `customer.subscription.updated` e `customer.subscription.deleted`; o estado de assinatura confirmado pelo servidor determina o plano. Faça um teste completo com o modo de teste do Stripe antes de cobrar clientes.
+`AI_API_KEY` habilita roteiro textual no endpoint OpenAI; `AI_MODEL` padrão gpt-4.1-mini. Sem chave, templates funcionam e são identificados como templates. O recurso pago opcional não sintetiza vídeo ou voz por IA.
 
-O portal de cobrança precisa estar habilitado na conta Stripe. O destino HTTPS da API é `api.stripe.com`; as páginas de checkout e portal são abertas pelo navegador em `checkout.stripe.com` e `billing.stripe.com`. O código não cria o produto, não determina preço e não executa uma compra durante a instalação. `STRIPE_WEBHOOK_SECRET` e `APP_SECRET` precisam de valores locais reais para assinatura e criptografia; um marcador de credencial substituído apenas pelo proxy de saída não atende a esse uso local.
+O servidor já processa a fila. Para worker externo confiável, configure `AUTOPOSTS_API_SECRET` forte no host e Secret de mesmo nome em Actions, junto da Variable `AUTOPOSTS_API_URL` apontando ao domínio base, credenciais B2 e variables do bucket/endpoint. Execute o workflow Renderizar próxima tarefa manualmente. O protocolo reserva tarefa, valida proprietário e confirma o upload antes do callback. Não exponha esse segredo ao cliente e não use Actions como processamento comercial ilimitado.
 
-## Pausar, recuperar e evitar duplicação
+## Backup, restauração e retenção
 
-- Pausar uma campanha impede novas gerações automáticas e retira da fila os itens dela que ainda podem ser pausados. Uma publicação já enviada à Meta pode concluir; confira o painel e o Instagram antes de repetir qualquer ação.
-- As filas e os identificadores dos containers Meta ficam no SQLite. Reiniciar não deve criar uma segunda campanha nem outro post para o mesmo horário.
-- Uma falha ambígua durante a confirmação de publicação exige conferência no Instagram. Não apague o identificador do container nem tente forçar outra publicação para “destravar” o item.
-- Uma instância desligada não publica no horário. Após reiniciar, a recuperação limita o trabalho atrasado; não se deve esperar uma avalanche de todos os horários perdidos.
-- Verifique uso de disco periodicamente. MP4 e uploads são persistentes; este MVP não implementa descarte automático por prazo.
-
-## Backup e atualização
-
-Faça backup de `DATA_DIR` e guarde `APP_SECRET` separadamente em um cofre. O banco, os arquivos e a chave devem corresponder à mesma instalação. Os backups contêm dados de clientes e tokens criptografados; limite o acesso e teste a restauração em um ambiente isolado.
-
-Para copiar todo o diretório sem uma cópia SQLite inconsistente, pare o serviço antes do backup. No Compose:
+Backup consistente, com a aplicação em funcionamento:
 
 ```bash
-docker compose stop app
-# Faça uma cópia verificada do volume autoposts-data usando a ferramenta de backup do host.
-# Preserve também APP_SECRET no gerenciador seguro de segredos.
-docker compose start app
+docker compose exec app python -m scripts.backup_db /app/.data/backup-20261021.db
+docker compose cp app:/app/.data/backup-20261021.db .backups/backup-20261021.db
 ```
 
-Para atualizar, preserve o volume e a configuração, faça backup, reconstrua a imagem e inicie o serviço. Não execute múltiplas versões ao mesmo tempo contra o mesmo banco. A inicialização cria as tabelas necessárias, mas o projeto ainda não possui um sistema geral de migrações para alterações futuras de schema.
+Crie `.backups` com acesso privado antes de copiar e mova o backup para armazenamento seguro externo ao host. Guarde APP_SECRET separadamente: sem ele os tokens cifrados não serão recuperáveis. Não sobrescreva backups. Para restaurar, pare o serviço, preserve cópia do estado atual, restaure o SQLite com permissões UID10001, remova WAL/SHM antigos somente com o serviço parado, recoloque a mesma chave e valide integridade/contas antes de retomar campanhas.
 
-## Verificações
+`MEDIA_RETENTION_DAYS=10` regula inatividade. Login/uso autenticado atualiza atividade; rotina de minuto limpa mídia elegível e preserva publicações pendentes/logos ativos. Histórico, campanhas e cobrança permanecem. B2 versionado exige purgar versões; apagar apenas uma delete marker não economizaria o armazenamento antigo. Exclusões falhas ficam no outbox, com erro sanitizado, para repetir. Exclusão de conta bloqueia sessões imediatamente e só termina após a remoção B2 confirmada. A aplicação não exclui posts publicados na Meta.
 
-```bash
-./scripts/install.sh
-.venv/bin/python -m pytest -q
-./scripts/start.sh
-```
+Monitorar: `/health`, jobs failed/atrasados, publicação ambígua, `storage_deletions` pendente, SMTP, uso de disco/CPU e gastos/cotas de fornecedores. Configure backups agendados e alertas no host; o repositório fornece a ferramenta de backup, não um serviço externo gerenciado de recuperação de desastre.
 
-Em outro terminal, faça requisições locais a `/health` e ao fluxo de cadastro, campanha e prévia. Verifique que um MP4 real foi produzido e que renderizar uma prévia não publica. Depois de configurar serviços externos, valide OAuth, publicação em conta de teste, assinatura do webhook e atualização do plano com credenciais de teste. Testes com respostas simuladas não comprovam acesso real às contas desses provedores.
+## GitHub e ambiente Codex
 
-Cadastro aberto, recuperação de senha, confirmação de e-mail, política de privacidade, termos, exclusão/portabilidade de dados, monitoramento e atendimento precisam de uma revisão de lançamento antes de aceitar clientes em produção. O projeto não afirma que aprovações Meta, cobranças reais ou deploy externo foram concluídos apenas porque os testes locais passaram.
+CI executa testes/mídia no push e PR. Não faz deploy automático de produção ou cobranças. O branch de implementação deve passar por revisão antes de merge. Configure o host para atualizar a partir da branch aprovada usando seus mecanismos seguros; sem credenciais/host definido, nenhum deploy remoto foi realizado.
+
+O draft de onboarding registra instalação/start locais. Salvar draft, publicar ambiente de desenvolvimento e implantar o SaaS são operações distintas. Restrições de rede da instância podem impedir `api.github.com` mesmo quando Git push funciona; isso não significa que seja necessário enviar um PAT pelo chat.
