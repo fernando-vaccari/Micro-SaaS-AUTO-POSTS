@@ -1,81 +1,65 @@
-# AUTOPOSTS
+# AUTO POSTS
 
-Micro-SaaS para transformar uma campanha em vídeos verticais e publicações no Instagram. O cliente configura o nicho, os assuntos, o estilo, os horários e a conta profissional. Ao ativar a campanha, autoriza a geração e a publicação sem aprovar cada vídeo.
+Micro SaaS em português para criar imagens e Reels, organizar biblioteca e executar campanhas com publicação oficial no Instagram. Esta entrega continua o código Python existente, conforme o pedido mais recente. A migração parcial para Workers foi preservada em `archive/cloudflare-wip-20261021`; a versão Python anterior está em `archive/python-mvp`.
 
-O aplicativo contém painel em português, cadastro e login, campanhas, geração de roteiros com IA ou textos fornecidos pelo cliente, renderização real de MP4 com FFmpeg, fila persistente, integração Instagram Login e cobrança opcional com Stripe. A instalação não conecta contas, não efetua cobranças e não publica conteúdo.
+**Situação:** aplicação testada localmente; integrações externas ainda precisam de validação. O último teste real B2 rejeitou o Key ID. Não é uma declaração de produto pronto para venda.
 
-## Executar em desenvolvimento
+## Arquitetura
 
-Requisitos: Linux, Python 3.12 ou superior, FFmpeg/ffprobe com encoder `libx264` e fontes DejaVu. Em Debian/Ubuntu, os pacotes de sistema são `ffmpeg`, `fonts-dejavu-core` e `tzdata`. `uv` é recomendado; o instalador também aceita `venv`/`pip`.
+FastAPI serve API e interface existente. Um SQLite persistente é a fonte única para clientes, assinaturas, campanhas, consumo e fila. Um worker no mesmo serviço processa tarefas com reserva atômica, tentativas limitadas e lease. FFmpeg gera MP4 H.264/AAC 1080×1920; Pillow gera JPEG 1080×1350. Em produção, mídia privada fica no Backblaze B2, com confirmação por HEAD e URLs temporárias.
 
-Use o checkout existente. Cada tarefa na nuvem já é isolada; não é necessário criar outro clone ou worktree.
+O servidor deve continuar ligado. Não há dependência do computador do cliente. **Este backend Python/FFmpeg não é executável no Cloudflare Workers Free**; Cloudflare pode fornecer DNS e proxy HTTPS. Docker e Caddy estão preparados para um host persistente. Não há dois bancos sincronizados nem usuário global compartilhado.
+
+## Executar localmente
+
+Requer Python 3.12+, FFmpeg com libx264, ffprobe, fontes DejaVu e tzdata. No Debian/Ubuntu, instale `ffmpeg fonts-dejavu-core tzdata`.
 
 ```bash
-cd /workspace/Micro-SaaS-AUTO-POSTS
+cp .env.example .env
 ./scripts/install.sh
-cp -n .env.example .env
 ./scripts/start.sh
 ```
 
-O servidor usa a porta 8000. Faça a verificação local, sem precisar publicar uma prévia:
+O modo development permite experimentar localmente com 3 vídeos e 2 imagens. Não cria assinatura paga nem publica sem conta e autorização. Não utilize esse modo em um serviço público comercial.
 
 ```bash
-curl --fail http://127.0.0.1:8000/health
 .venv/bin/python -m pytest -q
+.venv/bin/python -m compileall -q autoposts scripts tests
+node --check autoposts/static/app.js
+.venv/bin/python -m scripts.generate_demo
 ```
 
-O primeiro cadastro cria uma conta vazia, sem campanhas ou postagens fictícias. Em desenvolvimento, uma chave local é criada em `.data/.app-secret` quando `APP_SECRET` está vazio. Preserve essa chave e o diretório `.data` entre reinicializações.
+Não existe build Node obrigatório: FastAPI serve os arquivos em `autoposts/static`. Não use `wrangler deploy` para esta arquitetura.
 
-## Fluxo automático
+## Funcionalidades
 
-1. Cadastre a conta e crie uma campanha desativada.
-2. Escolha **textos fornecidos** para trabalhar sem serviço de IA, ou **IA** para gerar roteiros a partir do nicho e dos assuntos com sua chave `AI_API_KEY`.
-3. Gere uma prévia para conferir o vídeo. A prévia não é publicada, mesmo em uma campanha ativa.
-4. Configure uma URL HTTPS pública, o aplicativo Meta e conecte o Instagram profissional pelo próprio painel.
-5. Defina os horários e o fuso e ative a campanha. A partir dessa autorização, os novos vídeos seguem para publicação automaticamente.
+- Cadastro, sessões, CSRF, senhas scrypt, recuperação por SMTP, verificação de e-mail, alteração de senha e exclusão com limpeza confirmada.
+- Imagens e vídeos reais com cenas, cores, CTA, marca, logo, fundo e movimento opcional. Vídeos de 6–60 segundos; campanhas usam 45 segundos por padrão. Templates sem IA paga; roteiro por IA é opcional.
+- Biblioteca privada, download, fila persistente, retry com backoff e prevenção de conclusão sem upload confirmado.
+- Campanhas diárias ou com dias da semana, horário/fuso, prévia, pausa, retomada, agendamento e publicação manual confirmada.
+- OAuth oficial Instagram, tokens criptografados, renovação e processamento de imagens/Reels. Ativar campanha autoriza publicações automáticas futuras; prévia não publica.
+- Quatro assinaturas, checkout/portal, webhooks assinados, histórico, limites separados para imagens/vídeos e teste Starter.
+- Limpeza de mídia após 10 dias sem atividade, configurável; preserva pendências e materiais em uso por campanhas ativas.
 
-Pausar interrompe novos trabalhos da campanha e retira suas publicações que ainda aguardam na fila. Uma requisição de publicação que já chegou ao Instagram pode terminar mesmo após a pausa. Confira o estado das publicações no painel.
+| Plano | Mensalidade | Vídeos | Imagens |
+|---|---:|---:|---:|
+| Starter | R$ 29,99 | 10 | 5 |
+| Pro | R$ 69,99 | 20 | 10 |
+| Business | R$ 109,99 | 50 | 25 |
+| Premium | R$ 159,99 | 80 | 40 |
 
-Os vídeos desta versão são apresentações verticais com texto, fundos e imagens opcionais, com faixa de áudio silenciosa para compatibilidade. O fluxo não inclui narração, pesquisa de fatos, filmagens geradas ou licenciamento de música. O uso de IA não substitui a responsabilidade do cliente pelo conteúdo e pelos direitos sobre materiais enviados.
+Starter: sete dias de teste, e-mail confirmado, cartão no Stripe e controle de reutilização por hash do e-mail. Isso reduz abuso, sem garantir identificação única de uma pessoa. Preços e limites são variáveis de ambiente. Criar um post reserva um crédito; regenerar um resultado já gerado consome outro. Excluir posts não restitui créditos. Falhas temporárias reutilizam o arquivo renderizado. O ciclo pago acompanha o período confirmado pelo Stripe; sandbox usa mês UTC.
 
-## Configuração
+## Configuração e deploy
 
-As variáveis são lidas do processo ou do arquivo local `.env`; valores do processo têm prioridade. Nunca versione arquivos com credenciais.
+Todas as opções estão em [.env.example](.env.example), sem necessidade de editar fontes. As chaves do GitHub Actions não são automaticamente disponibilizadas ao servidor: configure-as também no gerenciador seguro de variáveis do host.
 
-| Variável | Uso |
-| --- | --- |
-| `APP_ENV` | `development` ou `production`. |
-| `APP_BASE_URL` | Origem pública do aplicativo. HTTPS público é obrigatório para publicar no Instagram e para produção. |
-| `APP_SECRET` | Segredo estável com pelo menos 32 caracteres; obrigatório em produção. Protege sessões e tokens armazenados. |
-| `DATA_DIR` | Dados persistentes: SQLite, uploads, vídeos e chave local de desenvolvimento. Padrão `.data`. |
-| `INSTAGRAM_APP_ID` | Identificador do aplicativo Meta com Instagram Login. |
-| `INSTAGRAM_APP_SECRET` | Segredo do aplicativo Meta. |
-| `INSTAGRAM_REDIRECT_URI` | Callback exato cadastrado na Meta: origem pública seguida de `/api/integrations/instagram/callback`. |
-| `INSTAGRAM_GRAPH_VERSION` | Versão da Graph API; padrão `v25.0`. |
-| `AI_API_KEY` | Chave da API OpenAI para campanhas no modo IA. Não é exigida no modo de textos fornecidos. |
-| `AI_MODEL` | Modelo de texto; padrão `gpt-4.1-mini`. Custos e disponibilidade dependem da conta do provedor. |
-| `STRIPE_SECRET_KEY` | Chave Stripe; opcional enquanto não houver cobrança. Comece em modo de teste. |
-| `STRIPE_WEBHOOK_SECRET` | Segredo de assinatura do webhook Stripe. |
-| `STRIPE_PRICE_ID` | Preço recorrente do plano Pro configurado na mesma conta Stripe. |
+Consulte [operações e credenciais](docs/OPERATIONS.md), [arquitetura e auditoria](docs/ARCHITECTURE.md), [validação](docs/VALIDATION.md) e [checklist de lançamento](docs/LAUNCH_CHECKLIST.md).
 
-O limite inicial é de 3 vídeos por mês no plano gratuito e 100 no Pro. A criação de prévias também utiliza a cota. A confirmação de pagamento depende do webhook verificado; o retorno do navegador após um checkout não concede o plano.
+Para HTTPS público: configure um host persistente, DNS do domínio, variáveis de produção/B2/SMTP/Stripe/Meta e execute `docker compose --profile public up -d --build`. O perfil padrão expõe somente loopback; o perfil public adiciona Caddy nas portas 80/443. Instruções detalhadas e backup estão no guia de operações.
 
-## Executar com Docker
+GitHub Actions valida testes e gera um MP4 de demonstração. O workflow B2 é manual; escolha a branch desta entrega. O renderizador remoto também é manual, opcional, e aceita apenas tarefas autenticadas do servidor. Nada publica na produção automaticamente ao fazer push.
 
-```bash
-cp -n .env.example .env
-# Edite .env com as configurações do ambiente.
-docker compose up --build -d
-docker compose ps
-docker compose logs --tail=100 app
-```
+## Custos e limites
 
-O serviço fica vinculado ao loopback do host por padrão e usa um volume nomeado para os dados. Configure um proxy reverso com HTTPS para expor o aplicativo em produção. `AUTOPOSTS_BIND_IP` e `AUTOPOSTS_PORT` alteram o vínculo no host; mudar o vínculo não configura domínio, TLS ou firewall.
-
-O servidor e os agendadores rodam em uma única instância. Não use múltiplos workers, réplicas ou volumes locais independentes para a mesma fila.
-
-## Antes de oferecer o serviço a clientes
-
-Veja [operação e publicação](docs/OPERATIONS.md) para configurar Meta, Stripe, HTTPS, persistência, backup e recuperação. O projeto não cria recursos de hospedagem nem publica uma implantação automaticamente.
-
-Há cadastro e login com senha. Recuperação de senha, confirmação de e-mail e envio de mensagens transacionais ainda não fazem parte desta versão. Essas capacidades, termos de uso, política de privacidade e uma política de retenção precisam ser preparados antes de abrir um serviço público a clientes.
+Python, FastAPI, FFmpeg e Pillow são gratuitos. Armazenamento, tráfego, CPU de renderização, domínio, SMTP e tarifas Stripe podem gerar custos. B2 e Cloudflare têm cotas e políticas próprias, que devem ser conferidas antes de operar. GitHub Actions não é uma fazenda de renderização comercial ilimitada. Para testes gratuitos, use a máquina local ou este ambiente; para produção confiável, use um host Docker com disco persistente, backup e capacidade suficiente (por exemplo, VPS econômica). Nenhum serviço pago foi provisionado nem cobrança real executada nesta entrega.

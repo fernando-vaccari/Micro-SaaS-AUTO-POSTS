@@ -11,6 +11,8 @@ from urllib.parse import urlsplit
 
 from . import core
 from .media import RenderError, render_post
+from .storage import StorageError
+from fastapi import HTTPException
 
 logger = logging.getLogger(__name__)
 POLL_SECONDS = 1.0
@@ -44,22 +46,13 @@ def _recover_interrupted_publications() -> None:
 
 
 def _render_one() -> bool:
-    post = core.one("SELECT * FROM posts WHERE status='rendering' ORDER BY created_at,id LIMIT 1")
-    if not post:
-        return False
-    try:
-        filename = render_post(post)
-        core.execute(
-            "UPDATE posts SET status='ready', output_path=?, last_error=NULL, updated_at=? "
-            "WHERE id=? AND status='rendering'",
-            (filename, core.now(), post["id"]),
-        )
-    except RenderError as exc:
-        _fail(post["id"], str(exc), "rendering")
-    except Exception:
-        # Exception details can contain request credentials; only log identifiers.
-        logger.error("Unexpected render failure for post %s", post["id"])
-        _fail(post["id"], "Ocorreu uma falha ao renderizar o vídeo. Tente novamente ou contate o suporte.", "rendering")
+    from . import jobs
+    post=core.one("SELECT p.* FROM posts p LEFT JOIN media_jobs j ON j.post_id=p.id WHERE p.status='rendering' AND (j.id IS NULL OR (j.status='pending' AND (j.next_attempt_at IS NULL OR j.next_attempt_at<=?)) OR (j.status='processing' AND j.lease_until<=?)) ORDER BY p.created_at LIMIT 1",(core.now(),core.now()))
+    if not post:return False
+    jobs.enqueue(post['id'])
+    job=jobs.claim(post['id'])
+    if not job:return False
+    jobs.execute_job(job,render_function=render_post if post.get('kind','video')=='video' else None)
     return True
 
 
@@ -99,15 +92,23 @@ def _publish_one() -> bool:
         _fail(post["id"], "A publicação exige APP_BASE_URL com um endereço HTTPS público.", "publishing")
         return True
     output = post.get("output_path")
-    if not output or Path(output).name != output or not (core.settings.data_dir / "videos" / output).is_file():
+    if not output or Path(output).name != output or (not post.get('storage_key') and not (core.settings.data_dir / ('images' if post.get('kind')=='image' else 'videos') / output).is_file()):
         _fail(post["id"], "O arquivo renderizado não está disponível. Gere o vídeo novamente.", "publishing")
         return True
     if post["retry_count"] >= MAX_PUBLISH_POLLS:
         _fail(post["id"], "O Instagram excedeu o tempo de processamento. Confira sua conta antes de tentar novamente.", "publishing")
         return True
     try:
-        video_url = f"{core.settings.base_url.rstrip('/')}/media/{post['public_token']}.mp4"
-        result = instagram_publish_step(account, video_url, post["caption"], post["container_id"])
+        video_url = f"{core.settings.base_url.rstrip('/')}/media/{post['public_token']}.{'jpg' if post.get('kind')=='image' else 'mp4'}"
+        if post.get('storage_key'):
+            from .storage import B2Store
+            video_url=B2Store().url(post['storage_key'],3600,post.get('storage_version'))
+        from .plans import require_entitlement
+        require_entitlement(core.one('SELECT * FROM users WHERE id=?',(post['user_id'],)))
+        if post.get('kind')=='image':
+            from .integrations import instagram_publish_image_step
+            result=instagram_publish_image_step(account,video_url,post['caption'],post['container_id'])
+        else:result = instagram_publish_step(account, video_url, post["caption"], post["container_id"])
         if result.get("status") == "published":
             core.execute(
                 "UPDATE posts SET status='published', container_id=?, media_id=?, last_error=NULL, next_attempt_at=NULL, updated_at=? "
@@ -123,6 +124,8 @@ def _publish_one() -> bool:
             )
         else:
             _fail(post["id"], "O Instagram devolveu uma resposta inesperada. Confira sua conta antes de repetir a publicação.", "publishing")
+    except (HTTPException,StorageError) as exc:
+        _fail(post['id'],str(exc.detail) if isinstance(exc,HTTPException) else str(exc),'publishing')
     except IntegrationError as exc:
         if getattr(exc, "retryable", False) and post["container_id"]:
             core.execute(
@@ -148,6 +151,8 @@ def _run() -> None:
     while not _stop.is_set():
         try:
             run_once()
+            from .maintenance import run_once as maintain
+            maintain()
         except Exception:
             logger.error("Worker iteration failed; retrying without replaying remote side effects")
         _stop.wait(POLL_SECONDS)
@@ -188,7 +193,7 @@ def stop_worker() -> None:
         if _thread is not None:
             # FFmpeg itself has a timeout; retaining the lock until it exits avoids
             # a second process touching the same render during graceful shutdown.
-            _thread.join(timeout=330)
+            _thread.join(timeout=600)
             if _thread.is_alive():
                 raise RuntimeError("O worker não terminou a operação no prazo de encerramento.")
             _thread = None
