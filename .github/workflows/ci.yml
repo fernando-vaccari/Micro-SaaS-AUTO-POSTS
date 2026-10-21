@@ -23,24 +23,14 @@ jobs:
       - name: Validate frontend syntax
         run: node --check autoposts/static/app.js
         
-      - name: Generate MP4 artifact
-        run: |
-          mkdir -p artifacts
-          ffmpeg -y \
-            -f lavfi -i "color=c=blue:s=1080x1920:r=30" \
-            -f lavfi -i "anullsrc=r=44100:cl=stereo" \
-            -t 6 \
-            -c:v libx264 \
-            -preset ultrafast \
-            -pix_fmt yuv420p \
-            -c:a aac \
-            -shortest \
-            artifacts/autoposts-test.mp4
+      - name: Generate real Auto Posts MP4
+        run: python -m scripts.generate_demo
 
-      - name: Upload MP4 artifact
+      - name: Upload real MP4
         uses: actions/upload-artifact@v4
         with:
-          name: autoposts-video
-          path: artifacts/autoposts-test.mp4
+          name: autoposts-video-real
+          path: artifacts/autoposts-demo.mp4
+          if-no-files-found: error
           retention-days: 7
           
