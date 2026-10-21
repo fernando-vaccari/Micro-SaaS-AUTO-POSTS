@@ -36,6 +36,18 @@ class AutomationError(Exception):
 
 
 class CampaignInput(BaseModel):
+    kind: Literal['video','image']='video'
+    duration: int=Field(default=45,ge=6,le=60,strict=True)
+    weekdays: list[int]=Field(default_factory=lambda:list(range(7)),min_length=1,max_length=7)
+    company_name: str=Field(default='',max_length=80)
+    objective: str=Field(default='',max_length=200)
+    brand_config: dict=Field(default_factory=dict)
+
+    @field_validator('weekdays')
+    @classmethod
+    def weekdays_valid(cls,value):
+        if any(type(v) is not int or v<0 or v>6 for v in value) or len(set(value))!=len(value):raise ValueError('Escolha dias da semana de 0 (segunda) a 6 (domingo), sem repetições.')
+        return sorted(value)
     name: str = Field(min_length=2, max_length=80)
     niche: str = Field(min_length=3, max_length=160)
     audience: str = Field(default='', max_length=200)
@@ -109,7 +121,7 @@ def utcnow() -> datetime:
     return datetime.now(dt_timezone.utc)
 
 
-def next_occurrence(times: list[str], zone_name: str, after: datetime | None = None) -> str:
+def next_occurrence(times: list[str], zone_name: str, after: datetime | None = None, weekdays: list[int] | None = None) -> str:
     """Return the next real local clock slot, accounting for DST gaps and folds."""
     after = after or utcnow()
     if after.tzinfo is None:
@@ -117,8 +129,9 @@ def next_occurrence(times: list[str], zone_name: str, after: datetime | None = N
     zone = ZoneInfo(zone_name)
     local_day = after.astimezone(zone).date()
     candidates = []
-    for offset in range(4):
+    for offset in range(8):
         day = local_day + timedelta(days=offset)
+        if weekdays is not None and day.weekday() not in weekdays:continue
         for slot in times:
             hour, minute = map(int, slot.split(':'))
             for fold in (0, 1):
@@ -160,12 +173,16 @@ def init_automation() -> None:
         CREATE INDEX IF NOT EXISTS automation_runs_jobs ON automation_runs(status, created_at);
         ''')
 
+        from .schema import campaign_extensions
+        campaign_extensions(db)
 
 def public_campaign(campaign: dict) -> dict:
     result = dict(campaign)
     result['topics'] = json.loads(result['topics'])
     result['times'] = json.loads(result['times'])
     result['enabled'] = bool(result['enabled'])
+    result['weekdays']=json.loads(result.get('weekdays') or '[0,1,2,3,4,5,6]')
+    result['brand_config']=json.loads(result.get('brand_config') or '{}')
     result.pop('generation_index', None)
     result.pop('user_id', None)
     return result
@@ -187,6 +204,12 @@ def owned_campaign(campaign_id: str, user: dict) -> dict:
 
 
 def validate_input(data: CampaignInput, user: dict) -> None:
+    from .main import Branding
+    from pydantic import ValidationError
+    try:brand=Branding.model_validate(data.brand_config)
+    except ValidationError:raise HTTPException(422,'Identidade visual inválida.') from None
+    if brand.logo_asset_id and not core.one('SELECT 1 FROM assets WHERE id=? AND user_id=? AND deleted_at IS NULL',(brand.logo_asset_id,user['id'])):raise HTTPException(400,'O logo deve pertencer à sua biblioteca.')
+    data.brand_config=brand.model_dump()
     if len(data.name.strip()) < 2 or len(data.niche.strip()) < 3:
         raise HTTPException(422, 'Preencha o nome e o nicho da automação.')
     if data.mode == 'templates' and not data.topics:
@@ -202,6 +225,8 @@ def validate_dependencies(campaign: dict, *, preview: bool = False) -> None:
         raise HTTPException(503, 'Configure AI_API_KEY no ambiente para gerar roteiros com IA.')
     if preview:
         return
+    from .plans import require_entitlement
+    require_entitlement(core.one('SELECT * FROM users WHERE id=?',(campaign['user_id'],)))
     if not core.is_public_https(core.settings.base_url):
         raise HTTPException(503, 'A publicação automática precisa de APP_BASE_URL HTTPS pública para o Instagram baixar os vídeos.')
     account = core.one('SELECT * FROM accounts WHERE id = ? AND user_id = ? AND provider = ?',
@@ -242,8 +267,9 @@ def create_campaign(data: CampaignInput, user: dict = Depends(core.current_user)
             campaign_id, user['id'], data.name.strip(), data.niche.strip(), data.audience, data.tone,
             data.cta, json.dumps(data.topics, ensure_ascii=False), data.mode, data.account_id,
             data.timezone, json.dumps(data.times), int(data.enabled),
-            next_occurrence(data.times, data.timezone) if data.enabled else None, stamp, stamp,
+            next_occurrence(data.times, data.timezone,weekdays=data.weekdays) if data.enabled else None, stamp, stamp,
         ))
+        db.execute('UPDATE campaigns SET kind=?,duration=?,weekdays=?,company_name=?,objective=?,brand_config=? WHERE id=?',(data.kind,data.duration,json.dumps(data.weekdays),data.company_name,data.objective,json.dumps(data.brand_config),campaign_id))
     return {'campaign': public_campaign(owned_campaign(campaign_id, user))}
 
 
@@ -262,6 +288,9 @@ def _pause_scheduled(db: sqlite3.Connection, campaign_id: str, stamp: str) -> No
             SELECT post_id FROM automation_runs WHERE campaign_id = ? AND status = 'cancelled'
         )''', ('Automação pausada antes da geração.', stamp, campaign_id))
 
+    db.execute("UPDATE media_jobs SET status='failed',last_error='Campanha pausada.' WHERE status='pending' AND post_id IN (SELECT post_id FROM automation_runs WHERE campaign_id=? AND status='cancelled' AND preview=0)",(campaign_id,))
+    db.execute("UPDATE posts SET status='failed',last_error='Campanha pausada.' WHERE status='rendering' AND id IN (SELECT post_id FROM automation_runs WHERE campaign_id=? AND status='cancelled' AND preview=0) AND NOT EXISTS(SELECT 1 FROM media_jobs j WHERE j.post_id=posts.id AND j.status='processing')",(campaign_id,))
+
 
 @router.put('/{campaign_id}')
 def update_campaign(campaign_id: str, data: CampaignInput, user: dict = Depends(core.current_user)) -> dict:
@@ -276,9 +305,10 @@ def update_campaign(campaign_id: str, data: CampaignInput, user: dict = Depends(
             timezone=?,times=?,enabled=?,next_run_at=?,last_error=NULL,updated_at=? WHERE id=? AND user_id=?''', (
             data.name.strip(), data.niche.strip(), data.audience, data.tone, data.cta,
             json.dumps(data.topics, ensure_ascii=False), data.mode, data.account_id, data.timezone,
-            json.dumps(data.times), int(data.enabled), next_occurrence(data.times, data.timezone) if data.enabled else None,
+            json.dumps(data.times), int(data.enabled), next_occurrence(data.times, data.timezone,weekdays=data.weekdays) if data.enabled else None,
             stamp, campaign_id, user['id'],
         ))
+        db.execute('UPDATE campaigns SET kind=?,duration=?,weekdays=?,company_name=?,objective=?,brand_config=? WHERE id=?',(data.kind,data.duration,json.dumps(data.weekdays),data.company_name,data.objective,json.dumps(data.brand_config),campaign_id))
     return {'campaign': public_campaign(owned_campaign(campaign_id, user))}
 
 
@@ -316,12 +346,11 @@ def enqueue(campaign_id: str, *, preview: bool, scheduled_for: str | None = None
                           (campaign_id,)).fetchone()
         if busy:
             raise HTTPException(409, 'Esta automação já está preparando um vídeo. Aguarde a conclusão.')
-        user = db.execute('SELECT * FROM users WHERE id = ?', (campaign['user_id'],)).fetchone()
-        month = utcnow().strftime('%Y-%m')
-        usage = db.execute('SELECT count FROM post_usage WHERE user_id = ? AND month = ?', (campaign['user_id'], month)).fetchone()
-        limit = core.PRO_POSTS if user['plan'] == 'pro' else core.FREE_POSTS
-        if usage and usage['count'] >= limit:
-            raise HTTPException(429, f'Limite mensal de {limit} vídeos atingido. A automação retomará após a renovação da cota.')
+        from .plans import reserve
+        try:reserve(db,campaign['user_id'],campaign.get('kind','video'))
+        except HTTPException as exc:
+            if exc.status_code==403:raise HTTPException(429,str(exc.detail)) from None
+            raise
         post_id, run_id = core.uid(), core.uid()
         db.execute('''INSERT INTO posts
             (id,user_id,title,caption,scenes,duration,theme,status,public_token,created_at,updated_at)
@@ -336,8 +365,10 @@ def enqueue(campaign_id: str, *, preview: bool, scheduled_for: str | None = None
             run_id, campaign_id, campaign['user_id'], scheduled_for or 'preview:' + run_id,
             int(preview), post_id, campaign['generation_index'], stamp, stamp,
         ))
-        db.execute('''INSERT INTO post_usage(user_id,month,count) VALUES(?,?,1)
-            ON CONFLICT(user_id,month) DO UPDATE SET count=count+1''', (campaign['user_id'], month))
+        brand=json.loads(campaign.get('brand_config') or '{}')
+        brand['company_name']=campaign.get('company_name') or brand.get('company_name','')
+        brand['cta']=campaign['cta'] or brand.get('cta','')
+        db.execute('UPDATE posts SET kind=?,duration=?,brand_config=? WHERE id=?',(campaign.get('kind','video'),campaign.get('duration',45),json.dumps(brand),post_id))
         db.execute('UPDATE campaigns SET generation_index = generation_index + 1, last_error = NULL, updated_at = ? WHERE id = ?',
                    (stamp, campaign_id))
         result = dict(db.execute('SELECT * FROM automation_runs WHERE id = ?', (run_id,)).fetchone())
@@ -369,6 +400,7 @@ def generate_content(campaign: dict, topic_index: int) -> GeneratedContent:
         opening = f"{campaign['niche']}: uma ideia para colocar em prática"[:160]
         closing = campaign['cta'].strip() or 'Salve esta ideia para consultar depois.'
         title = topic[:117] + ('…' if len(topic) > 117 else '')
+        if campaign.get('kind')=='image':body=[topic[:400]]
         return GeneratedContent(title=title if len(title) >= 2 else campaign['niche'],
                                 caption=(topic + '\n\n' + closing)[:2200],
                                 scenes=[opening, *body[:3], closing])
@@ -377,6 +409,8 @@ def generate_content(campaign: dict, topic_index: int) -> GeneratedContent:
         raise AutomationError('Configure AI_API_KEY para gerar roteiros com IA.')
     brief = {key: campaign[key] for key in ['niche', 'audience', 'tone', 'cta']}
     brief['pauta'] = topic
+    brief['empresa'] = campaign.get('company_name','')
+    brief['objetivo'] = campaign.get('objective','')
     try:
         response = httpx.post('https://api.openai.com/v1/chat/completions',
             headers={'Authorization': 'Bearer ' + key}, timeout=httpx.Timeout(45.0, connect=10.0),
@@ -385,7 +419,7 @@ def generate_content(campaign: dict, topic_index: int) -> GeneratedContent:
                 'response_format': {'type': 'json_object'}, 'max_tokens': 900,
                 'messages': [
                     {'role': 'system', 'content': (
-                        'Você escreve roteiros originais em português brasileiro para vídeos verticais educativos de 24 segundos. '
+                        f"Você escreve roteiros originais em português brasileiro para {'imagem estática' if campaign.get('kind')=='image' else str(campaign.get('duration',45))+' segundos de vídeo vertical'}. "
                         'Responda apenas JSON com title (2 a 120 caracteres), caption (até 2200 caracteres) e scenes '
                         '(lista de 3 a 5 strings, cada uma com no máximo 260 caracteres). '
                         'A primeira cena deve prender a atenção, as seguintes entregar uma ideia concreta e a última trazer a CTA. '
@@ -473,7 +507,7 @@ def reconcile_runs() -> None:
             try:
                 validate_dependencies(campaign)
                 output = run.get('output_path')
-                if not output or not (core.settings.data_dir / 'videos' / output).is_file():
+                if not output or (not core.one('SELECT storage_key FROM posts WHERE id=?',(run['post_id'],))['storage_key'] and not (core.settings.data_dir / ('images' if core.one('SELECT kind FROM posts WHERE id=?',(run['post_id'],))['kind']=='image' else 'videos') / output).is_file()):
                     raise HTTPException(422, 'O arquivo do vídeo não foi encontrado. Gere uma nova prévia.')
                 with core.connect() as db:
                     db.execute('BEGIN IMMEDIATE')
@@ -481,7 +515,7 @@ def reconcile_runs() -> None:
                     state = db.execute('SELECT status FROM automation_runs WHERE id=?', (run['id'],)).fetchone()
                     if enabled and enabled['enabled'] and state and state['status'] == 'rendering':
                         db.execute("UPDATE posts SET status='scheduled',account_id=?,scheduled_at=?,updated_at=? WHERE id=? AND status='ready'",
-                                   (enabled['account_id'], stamp, stamp, run['post_id']))
+                                   (enabled['account_id'], max(stamp,run['scheduled_for']) if not run['preview'] else stamp, stamp, run['post_id']))
                         db.execute("UPDATE automation_runs SET status='scheduled',updated_at=? WHERE id=?", (stamp, run['id']))
             except HTTPException as exc:
                 pause_with_error(campaign['id'], str(exc.detail))
@@ -511,7 +545,7 @@ def tick_once() -> None:
         finally:
             # Compute from now, not the old scheduled time: never flood overdue slots.
             core.execute('UPDATE campaigns SET next_run_at=?,updated_at=? WHERE id=? AND enabled=1',
-                         (next_occurrence(json.loads(campaign['times']), campaign['timezone']), core.now(), campaign['id']))
+                         (next_occurrence(json.loads(campaign['times']), campaign['timezone'],weekdays=json.loads(campaign.get('weekdays') or '[0,1,2,3,4,5,6]')), core.now(), campaign['id']))
     queued = core.one("SELECT id FROM automation_runs WHERE status='queued' ORDER BY created_at LIMIT 1")
     if queued:
         process_run(queued['id'])

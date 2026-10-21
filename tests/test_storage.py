@@ -69,3 +69,17 @@ def test_roundtrip_probe_cleans_up_on_read_failure(monkeypatch,b2_env):
     monkeypatch.setattr(test_b2,'B2Store',lambda:store)
     assert test_b2.main()==1
     store.delete.assert_called_once()
+
+def test_delete_purges_versions_of_exact_key_only(b2_env):
+    client=Mock();key='users/one/images/a.jpg'
+    client.list_object_versions.return_value={'Versions':[{'Key':key,'VersionId':'v1'},{'Key':key,'VersionId':'v2'},{'Key':key+'-other','VersionId':'keep'}],'DeleteMarkers':[{'Key':key,'VersionId':'marker'}]}
+    client.head_object.side_effect=ClientError({'Error':{'Code':'404'}},'HeadObject')
+    B2Store(b2_env,client).delete(key,'v2')
+    assert [c.kwargs['VersionId'] for c in client.delete_object.call_args_list]==['v1','v2','marker']
+
+def test_file_upload_records_verified_version(b2_env,tmp_path):
+    path=tmp_path/'media';path.write_bytes(b'real bytes')
+    client=Mock();client.put_object.return_value={'VersionId':'version1'}
+    client.head_object.return_value={'ContentLength':10,'Metadata':{'sha256':hashlib.sha256(path.read_bytes()).hexdigest()}}
+    result=B2Store(b2_env,client).put_file('key',path,'image/jpeg')
+    assert result['version_id']=='version1' and result['size']==10

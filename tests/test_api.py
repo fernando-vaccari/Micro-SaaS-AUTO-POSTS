@@ -33,7 +33,8 @@ def test_registration_session_logout_and_revocation(api_client):
     assert client.post('/api/auth/login', json={'email': user['email'], 'password': 'wrong-but-long-password'}).status_code == 401
     assert client.post('/api/auth/login', json={'email': user['email'], 'password': 'a-valid-password'}).status_code == 200
     row = core.one('SELECT password_hash FROM users WHERE id=?', (user['id'],))
-    assert row['password_hash'].startswith('scrypt$')
+    assert row['password_hash'].startswith('scrypt-v2$32768$8$3$')
+    assert core.password_matches('a-valid-password',row['password_hash'])
     assert 'a-valid-password' not in row['password_hash']
 
 

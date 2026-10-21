@@ -9,6 +9,7 @@ import os
 import re
 import secrets
 import sqlite3
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -26,7 +27,7 @@ SESSION_AGE = 60 * 60 * 24 * 30
 SESSION_COOKIE = 'autoposts_session'
 CSRF_COOKIE = 'autoposts_csrf'
 FREE_POSTS = 3
-PRO_POSTS = 100
+PRO_POSTS = 20
 
 
 def now() -> str:
@@ -75,6 +76,8 @@ def load_settings() -> Settings:
     base_url = os.environ.get('APP_BASE_URL', 'http://127.0.0.1:8000').rstrip('/')
     app_secret = os.environ.get('APP_SECRET', '')
     if production:
+        if os.environ.get('STORAGE_BACKEND','b2')!='b2':
+            raise RuntimeError('Em produção, configure STORAGE_BACKEND=b2 para armazenar mídia privada com confirmação de upload.')
         if len(app_secret) < 32:
             raise RuntimeError('APP_SECRET deve ter pelo menos 32 caracteres no modo production.')
         if not is_public_https(base_url):
@@ -182,6 +185,8 @@ def init_db() -> None:
         );
         CREATE TABLE IF NOT EXISTS webhook_events (id TEXT PRIMARY KEY, created_at TEXT NOT NULL);
         ''')
+        from .schema import init_extensions
+        init_extensions(db)
         db.execute('DELETE FROM sessions WHERE expires_at < ?', (now(),))
 
 
@@ -200,7 +205,7 @@ def decrypt_secret(value: str) -> str:
 
 
 def public_user(user: dict) -> dict:
-    return {key: user[key] for key in ['id', 'email', 'name', 'plan', 'created_at']}
+    return {key: user.get(key) for key in ['id', 'email', 'name', 'plan', 'created_at','email_verified','subscription_status','subscription_until']}
 
 
 def optional_user(request: Request) -> dict | None:
@@ -212,7 +217,12 @@ def optional_user(request: Request) -> dict | None:
         session_id = hashlib.sha256(data['sid'].encode()).hexdigest()
     except (BadSignature, SignatureExpired, KeyError, TypeError):
         return None
-    return one('SELECT users.* FROM users JOIN sessions ON users.id = sessions.user_id WHERE sessions.id = ? AND sessions.expires_at > ?', (session_id, now()))
+    user=one('SELECT users.* FROM users JOIN sessions ON users.id = sessions.user_id WHERE sessions.id = ? AND sessions.expires_at > ? AND users.deletion_requested=0', (session_id, now()))
+    if user:
+        from datetime import timedelta
+        cutoff=(datetime.now(timezone.utc)-timedelta(minutes=5)).isoformat()
+        if (user.get('last_active_at') or '')<cutoff:execute('UPDATE users SET last_active_at=? WHERE id=?',(now(),user['id']))
+    return user
 
 
 def current_user(request: Request) -> dict:
@@ -265,27 +275,29 @@ def valid_csrf(request: Request) -> bool:
         return False
 
 
-def password_hash(password: str) -> str:
-    salt = secrets.token_bytes(16)
-    digest = hashlib.scrypt(password.encode(), salt=salt, n=16384, r=8, p=1)
-    return 'scrypt$' + salt.hex() + '$' + digest.hex()
+_password_slots=threading.BoundedSemaphore(2)
 
+def password_hash(password: str) -> str:
+    salt=secrets.token_bytes(16)
+    with _password_slots:digest=hashlib.scrypt(password.encode(),salt=salt,n=32768,r=8,p=3,maxmem=128*1024*1024)
+    return 'scrypt-v2$32768$8$3$'+salt.hex()+'$'+digest.hex()
 
 def password_matches(password: str, stored: str) -> bool:
     try:
-        algorithm, salt, expected = stored.split('$')
-        if algorithm != 'scrypt':
-            return False
-        digest = hashlib.scrypt(password.encode(), salt=bytes.fromhex(salt), n=16384, r=8, p=1)
-        return hmac.compare_digest(digest.hex(), expected)
-    except (ValueError, TypeError):
-        return False
+        parts=stored.split('$')
+        if len(parts)==3 and parts[0]=='scrypt':n,r,p,salt,expected=16384,8,1,parts[1],parts[2]
+        elif len(parts)==6 and parts[0]=='scrypt-v2':
+            n,r,p=int(parts[1]),int(parts[2]),int(parts[3]);salt,expected=parts[4],parts[5]
+            if (n,r,p)!=(32768,8,3):return False
+        else:return False
+        with _password_slots:digest=hashlib.scrypt(password.encode(),salt=bytes.fromhex(salt),n=n,r=r,p=p,maxmem=128*1024*1024)
+        return hmac.compare_digest(digest.hex(),expected)
+    except (ValueError,TypeError):return False
 
 
 def usage(user: dict) -> dict:
-    month = datetime.now(timezone.utc).strftime('%Y-%m')
-    row = one('SELECT count FROM post_usage WHERE user_id = ? AND month = ?', (user['id'], month))
-    return {'used': row['count'] if row else 0, 'limit': PRO_POSTS if user['plan'] == 'pro' else FREE_POSTS, 'plan': user['plan']}
+    from .plans import usage as plan_usage
+    return plan_usage(user)
 
 
 def owned_post(post_id: str, user: dict) -> dict:
@@ -310,8 +322,13 @@ def safe_file(directory: str, filename: str) -> Path:
 def public_post(post: dict) -> dict:
     import json
     keys = ['id', 'title', 'caption', 'duration', 'theme', 'status', 'scheduled_at', 'account_id',
-            'media_id', 'last_error', 'retry_count', 'created_at', 'updated_at']
+            'kind', 'render_count', 'media_deleted_at', 'brand_config', 'media_id', 'last_error', 'retry_count', 'created_at', 'updated_at']
     result = {key: post.get(key) for key in keys}
     result['scenes'] = json.loads(post['scenes'])
-    result['video_url'] = f"/api/posts/{post['id']}/video" if post['output_path'] and (settings.data_dir / 'videos' / post['output_path']).is_file() else None
+    result['generation_status']=None
+    if post['status']=='draft' and one("SELECT 1 FROM sqlite_master WHERE type='table' AND name='automation_runs'"):
+        row=one("SELECT status FROM automation_runs WHERE post_id=? AND status IN ('queued','generating')",(post['id'],))
+        result['generation_status']=row['status'] if row else None
+    result['brand_config'] = json.loads(post.get('brand_config') or '{}')
+    result['video_url'] = f"/api/posts/{post['id']}/video" if post['output_path'] and ((settings.data_dir / ('images' if post.get('kind')=='image' else 'videos') / post['output_path']).is_file() or post.get('storage_key')) else None
     return result

@@ -16,7 +16,27 @@ services:
     cap_drop:
       - ALL
     pids_limit: 256
-    stop_grace_period: 360s
+    stop_grace_period: 720s
+
+  caddy:
+    image: caddy:2
+    profiles: [public]
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      AUTOPOSTS_DOMAIN: ${AUTOPOSTS_DOMAIN:-localhost}
+      ACME_EMAIL: ${ACME_EMAIL:-}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
 
 volumes:
+  caddy-data:
+  caddy-config:
   autoposts-data:

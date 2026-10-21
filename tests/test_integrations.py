@@ -17,6 +17,8 @@ from autoposts import core, integrations
 
 @pytest.fixture
 def integration_app(tmp_path, monkeypatch):
+    for name in ('STARTER','PRO','BUSINESS','PREMIUM'):
+        monkeypatch.delenv('STRIPE_PRICE_'+name,raising=False)
     configured = replace(core.settings, data_dir=tmp_path, base_url="https://app.example.com", secure_cookies=False,
                          app_secret="integration-test-secret-32-characters-minimum", instagram_app_id="12345",
                          instagram_app_secret="test-instagram-secret", instagram_redirect_uri="https://app.example.com/api/integrations/instagram/callback",
@@ -261,7 +263,7 @@ def test_checkout_redirect_does_not_grant_plan(integration_app, monkeypatch):
     def provider(request):
         assert request.url.path.endswith("/checkout/sessions")
         assert b"subscription_data%5Bmetadata%5D%5Buser_id%5D=owner" in request.content
-        return httpx.Response(200, json={"url": "https://checkout.stripe.com/c/pay_test"})
+        return httpx.Response(200, json={"id":"cs_test_checkout1","url": "https://checkout.stripe.com/c/pay_test"})
     mock_provider(monkeypatch, provider)
     assert client.post("/api/billing/checkout").json()["url"].startswith("https://checkout.stripe.com/")
     assert core.one("SELECT plan FROM users WHERE id='owner'")["plan"] == "free"
@@ -280,3 +282,51 @@ def test_untrusted_unicode_signature_is_rejected(integration_app):
     # ASGI headers are bytes; a non-ASCII/latin1 signature must fail closed, not 500.
     response = client.post("/api/billing/webhook", content=payload, headers={b"Stripe-Signature": f"t={int(time.time())},v1=".encode() + b"\xe1"})
     assert response.status_code == 400
+
+def test_image_container_uses_official_image_url(integration_app,monkeypatch):
+    row=account();calls=[]
+    def provider(request):
+        calls.append(request)
+        return httpx.Response(200,json={'id':'123456789'})
+    mock_provider(monkeypatch,provider)
+    result=integrations.instagram_publish_image_step(row,'https://media.example.com/photo.jpg','Legenda')
+    body=parse_qs(calls[0].content.decode())
+    assert body['image_url']==['https://media.example.com/photo.jpg']
+    assert 'video_url' not in body and 'media_type' not in body
+    assert result['status']=='processing'
+
+def test_checkout_is_deduplicated_and_can_be_cancelled(integration_app,monkeypatch):
+    client,_=integration_app;calls=[]
+    def provider(request):
+        calls.append(request)
+        if request.url.path.endswith('/expire'):return httpx.Response(200,json={'id':'cs_test_pending','status':'expired'})
+        return httpx.Response(200,json={'id':'cs_test_pending','url':'https://checkout.stripe.com/c/pending'})
+    mock_provider(monkeypatch,provider)
+    assert client.post('/api/billing/checkout').status_code==200
+    assert client.post('/api/billing/checkout').status_code==200
+    assert len(calls)==1
+    assert client.post('/api/billing/checkout/cancel').status_code==200
+    assert len(calls)==2 and core.one('SELECT 1 FROM billing_checkouts') is None
+
+def test_starter_trial_requires_email_and_only_once(integration_app,monkeypatch):
+    client,_=integration_app;monkeypatch.setenv('STRIPE_PRICE_STARTER','price_test_starter')
+    assert client.post('/api/billing/checkout',json={'plan':'starter'}).status_code==403
+    core.execute("UPDATE users SET email_verified=1 WHERE id='owner'")
+    sent=[]
+    def provider(request):
+        sent.append(parse_qs(request.content.decode()))
+        return httpx.Response(200,json={'id':'cs_test_trial','url':'https://checkout.stripe.com/c/trial'})
+    mock_provider(monkeypatch,provider)
+    assert client.post('/api/billing/checkout',json={'plan':'starter'}).status_code==200
+    assert sent[0]['subscription_data[trial_period_days]']==['7']
+    assert sent[0]['payment_method_collection']==['always']
+    core.execute('DELETE FROM billing_checkouts')
+    core.execute('INSERT INTO trial_identities VALUES(?,?)',(hashlib.sha256(b'owner@example.com').hexdigest(),core.now()))
+    assert client.post('/api/billing/checkout',json={'plan':'starter'}).status_code==200
+    assert 'subscription_data[trial_period_days]' not in sent[1]
+
+def test_production_rejects_price_amount_mismatch(integration_app,monkeypatch):
+    client,_=integration_app;monkeypatch.setattr(core.settings,'production',True)
+    mock_provider(monkeypatch,lambda request:httpx.Response(200,json={'id':'price_test_pro','currency':'brl','unit_amount':1,'recurring':{'interval':'month','interval_count':1},'active':True}))
+    assert client.post('/api/billing/checkout').status_code==503
+    assert core.one('SELECT 1 FROM billing_checkouts') is None

@@ -67,7 +67,7 @@ def _failure(exc):
         if code in {'SignatureDoesNotMatch', 'InvalidToken'}:
             return StorageError('A assinatura foi recusada. Verifique o par keyID/applicationKey e a região do bucket.', code=code)
         if code in {'AccessDenied', 'Unauthorized'}:
-            return StorageError('A chave não permite esta operação. Verifique bucket, prefixo e permissões readFiles, writeFiles e deleteFiles.', code=code)
+            return StorageError('A chave não permite esta operação. Verifique bucket, prefixo e permissões listFiles, readFiles, writeFiles e deleteFiles.', code=code)
         if code in {'NoSuchBucket','NotFound','404'}:
             return StorageError('Bucket ou objeto não encontrado no B2. Verifique bucket e região.', code=code)
         retry = code in {'RequestTimeout','SlowDown','InternalError','ServiceUnavailable','503','500'}
@@ -99,12 +99,12 @@ class B2Store:
     def put_bytes(self, key, data: bytes, content_type):
         digest = hashlib.sha256(data).hexdigest()
         try:
-            self.client.put_object(Bucket=self.config.bucket, Key=key, Body=data,
+            response=self.client.put_object(Bucket=self.config.bucket, Key=key, Body=data,
                 ContentLength=len(data), ContentType=content_type,
                 ContentMD5=base64.b64encode(hashlib.md5(data).digest()).decode(), Metadata={'sha256':digest})
             self._confirm(key,len(data),digest)
         except (BotoCoreError, ClientError) as exc: raise _failure(exc) from None
-        return {'key':key,'size':len(data),'sha256':digest}
+        return {'key':key,'size':len(data),'sha256':digest,'version_id':response.get('VersionId') if isinstance(response.get('VersionId'),str) else None}
 
     def put_file(self, key, path: Path, content_type):
         digest=hashlib.sha256(); md5=hashlib.md5()
@@ -113,16 +113,17 @@ class B2Store:
         size=path.stat().st_size
         try:
             with path.open('rb') as stream:
-                self.client.put_object(Bucket=self.config.bucket, Key=key, Body=stream, ContentLength=size,
+                response=self.client.put_object(Bucket=self.config.bucket, Key=key, Body=stream, ContentLength=size,
                     ContentType=content_type,ContentMD5=base64.b64encode(md5.digest()).decode(),Metadata={'sha256':digest.hexdigest()})
             self._confirm(key,size,digest.hexdigest())
         except (BotoCoreError,ClientError) as exc: raise _failure(exc) from None
-        return {'key':key,'size':size,'sha256':digest.hexdigest()}
+        return {'key':key,'size':size,'sha256':digest.hexdigest(),'version_id':response.get('VersionId') if isinstance(response.get('VersionId'),str) else None}
 
     def _confirm(self,key,size,digest):
         result=self.client.head_object(Bucket=self.config.bucket,Key=key)
         if result['ContentLength']!=size or result.get('Metadata',{}).get('sha256')!=digest:
             raise StorageError('O upload não foi confirmado pelo B2.',code='verification',retryable=True)
+        return result
 
     def get_bytes(self,key, maximum=1024*1024):
         try:
@@ -133,10 +134,30 @@ class B2Store:
             return data
         except (BotoCoreError,ClientError) as exc: raise _failure(exc) from None
 
-    def delete(self,key):
-        try:self.client.delete_object(Bucket=self.config.bucket,Key=key)
+    def delete(self,key,version_id=None):
+        """Purge exact-key versions, not merely create a versioned delete marker."""
+        try:
+            markers={}
+            for _ in range(10):
+                page=self.client.list_object_versions(Bucket=self.config.bucket,Prefix=key,MaxKeys=100,**markers)
+                for version in page.get('Versions',[])+page.get('DeleteMarkers',[]):
+                    if version.get('Key')==key:
+                        self.client.delete_object(Bucket=self.config.bucket,Key=key,VersionId=version['VersionId'])
+                if not page.get('IsTruncated'):break
+                markers={'KeyMarker':page['NextKeyMarker'],'VersionIdMarker':page['NextVersionIdMarker']}
+            else:raise StorageError('Há mais versões que o limite de limpeza. A exclusão não foi concluída.',code='delete_limit',retryable=True)
+            try:self.client.head_object(Bucket=self.config.bucket,Key=key)
+            except ClientError as exc:
+                if str(exc.response.get('Error',{}).get('Code')) in {'NoSuchKey','NotFound','404'}:return
+                raise
+            raise StorageError('A exclusão ainda não foi confirmada pelo B2.',code='verification',retryable=True)
         except (BotoCoreError,ClientError) as exc:raise _failure(exc) from None
 
-    def url(self,key,seconds=900):
-        try:return self.client.generate_presigned_url('get_object',Params={'Bucket':self.config.bucket,'Key':key},ExpiresIn=max(60,min(int(seconds),3600)))
+    def url(self,key,seconds=900,version_id=None):
+        try:return self.client.generate_presigned_url('get_object',Params={'Bucket':self.config.bucket,'Key':key,**({'VersionId':version_id} if version_id else {})},ExpiresIn=max(60,min(int(seconds),3600)))
         except (BotoCoreError,ClientError) as exc:raise _failure(exc) from None
+
+def backend():
+    selected=os.environ.get('STORAGE_BACKEND','b2' if os.environ.get('APP_ENV')=='production' else 'local')
+    if selected not in {'local','b2'}:raise StorageError('STORAGE_BACKEND deve ser local ou b2.',code='configuration')
+    return selected

@@ -9,6 +9,7 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import re
 import secrets
 import time
 from datetime import datetime, timedelta, timezone
@@ -16,7 +17,7 @@ from typing import Any
 from urllib.parse import urlencode, urlsplit
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from starlette.concurrency import run_in_threadpool
@@ -63,7 +64,8 @@ def _instagram_configured() -> bool:
 
 
 def _stripe_configured() -> bool:
-    return bool(core.settings.stripe_secret_key and core.settings.stripe_price_id and core.settings.stripe_webhook_secret)
+    from .plans import catalog
+    return bool(core.settings.stripe_secret_key and any(p['stripe_price_id'] for p in catalog().values()) and core.settings.stripe_webhook_secret)
 
 
 def _state_serializer() -> URLSafeTimedSerializer:
@@ -234,7 +236,7 @@ def _refresh_instagram_token(account: dict, token: str) -> str:
     return refreshed
 
 
-def instagram_publish_step(account: dict, video_url: str, caption: str, container_id: str | None = None) -> dict:
+def instagram_publish_step(account: dict, video_url: str, caption: str, container_id: str | None = None, *, kind='video') -> dict:
     """Advance one persisted publishing stage, without retrying ambiguous writes."""
     if account.get("provider") != "instagram":
         raise IntegrationError("Selecione uma conta do Instagram.")
@@ -262,7 +264,7 @@ def instagram_publish_step(account: dict, video_url: str, caption: str, containe
     with httpx.Client(timeout=httpx.Timeout(30.0, connect=10.0), follow_redirects=False) as client:
         if not container_id:
             try:
-                payload = _provider_json(client.post(root + "/" + account_id + "/media", data={"media_type": "REELS", "video_url": video_url, "caption": caption, "share_to_feed": "true"}, headers=headers), operation="a criação do Reel")
+                payload = _provider_json(client.post(root + "/" + account_id + "/media", data=({"image_url":video_url,"caption":caption} if kind=="image" else {"media_type": "REELS", "video_url": video_url, "caption": caption, "share_to_feed": "true"}), headers=headers), operation="a criação do Reel")
                 created = _graph_id(payload.get("id"))
             except httpx.HTTPError:
                 raise IntegrationError("A criação do Reel não foi confirmada. Revise no Instagram antes de tentar novamente.") from None
@@ -289,6 +291,10 @@ def instagram_publish_step(account: dict, video_url: str, caption: str, containe
         return {"container_id": container_id, "status": "published", "media_id": media_id}
 
 
+def instagram_publish_image_step(account,image_url,caption,container_id=None):
+    return instagram_publish_step(account,image_url,caption,container_id,kind='image')
+
+
 def _stripe_request(method: str, path: str, *, data: dict | None = None, idempotency_key: str | None = None) -> dict:
     headers = {"Stripe-Version": "2025-02-24.acacia", "Authorization": "Bearer " + core.settings.stripe_secret_key}
     if idempotency_key:
@@ -309,30 +315,57 @@ def _require_stripe() -> None:
 
 
 @router.post("/api/billing/checkout")
-def billing_checkout(user: dict = Depends(core.current_user)):
+def billing_checkout(body:dict=Body(default={}),user:dict=Depends(core.current_user)):
+    from .plans import catalog
     _require_stripe()
-    if user.get("plan") == "pro":
-        raise HTTPException(409, "Sua conta já está no Pro. Use o portal para gerenciar a assinatura.")
-    data = {
-        "mode": "subscription", "line_items[0][price]": core.settings.stripe_price_id,
-        "line_items[0][quantity]": "1", "client_reference_id": user["id"],
-        "metadata[user_id]": user["id"], "subscription_data[metadata][user_id]": user["id"],
-        "success_url": core.settings.base_url.rstrip("/") + "/?billing=success",
-        "cancel_url": core.settings.base_url.rstrip("/") + "/?billing=cancelled",
-        "allow_promotion_codes": "true",
-    }
-    if user.get("stripe_customer_id"):
-        data["customer"] = user["stripe_customer_id"]
-    else:
-        data["customer_email"] = user["email"]
+    if user.get('stripe_subscription_id') and user.get('subscription_status') in {'active','trialing'}:
+        raise HTTPException(409,'Use o portal para alterar ou cancelar sua assinatura.')
+    selected=catalog().get(body.get('plan','pro'))
+    if not selected or not selected['stripe_price_id']:raise HTTPException(503,'Configure o Price ID Stripe do plano selecionado.')
+    with core.connect() as db:
+        db.execute('BEGIN IMMEDIATE')
+        pending=db.execute('SELECT * FROM billing_checkouts WHERE user_id=? AND expires_at>?',(user['id'],core.now())).fetchone()
+        if pending:
+            if pending['checkout_url'] and pending['plan']==selected['id']:return {'url':pending['checkout_url']}
+            raise HTTPException(409,'Há um checkout pendente. Cancele-o na tela de planos antes de escolher outro.')
+    if core.settings.production:
+        try:price=_stripe_request('GET','/prices/'+selected['stripe_price_id'])
+        except IntegrationError as exc:raise HTTPException(503,str(exc)) from None
+        recurring=price.get('recurring') or {}
+        if price.get('unit_amount')!=selected['price_cents'] or price.get('currency')!='brl' or recurring.get('interval')!='month' or recurring.get('interval_count',1)!=1 or not price.get('active'):
+            raise HTTPException(503,'O valor, moeda ou período do Price ID Stripe não corresponde ao plano configurado.')
+    data={
+      'mode':'subscription','line_items[0][price]':selected['stripe_price_id'],'line_items[0][quantity]':'1',
+      'client_reference_id':user['id'],'metadata[user_id]':user['id'],'subscription_data[metadata][user_id]':user['id'],
+      'subscription_data[metadata][plan]':selected['id'],'success_url':core.settings.base_url+'/?billing=success',
+      'cancel_url':core.settings.base_url+'/?billing=cancelled','allow_promotion_codes':'true',
+      'payment_method_collection':'always'}
+    if selected['id']=='starter':
+        if not user.get('email_verified'):raise HTTPException(403,'Confirme seu e-mail antes de solicitar o teste gratuito.')
+        email_hash=hashlib.sha256(user['email'].strip().lower().encode()).hexdigest()
+        if not core.one('SELECT 1 FROM trial_identities WHERE email_hash=?',(email_hash,)):
+            data['subscription_data[trial_period_days]']='7'
+            data['subscription_data[trial_settings][end_behavior][missing_payment_method]']='cancel'
+    if user.get('stripe_customer_id'):data['customer']=user['stripe_customer_id']
+    else:data['customer_email']=user['email']
+    nonce=core.uid()
+    with core.connect() as db:
+        db.execute('BEGIN IMMEDIATE')
+        pending=db.execute('SELECT * FROM billing_checkouts WHERE user_id=? AND expires_at>?',(user['id'],core.now())).fetchone()
+        if pending:raise HTTPException(409,'Checkout em processamento. Atualize a tela em alguns instantes.')
+        db.execute('INSERT OR REPLACE INTO billing_checkouts VALUES(?,?,?,NULL,NULL,?)',(user['id'],selected['id'],nonce,(datetime.now(timezone.utc)+timedelta(minutes=5)).isoformat()))
     try:
-        session = _stripe_request("POST", "/checkout/sessions", data=data, idempotency_key="checkout-" + user["id"] + "-" + secrets.token_hex(16))
+        session=_stripe_request('POST','/checkout/sessions',data=data,idempotency_key='checkout-'+user['id']+'-'+nonce)
+        url=session.get('url','');checkout_id=session.get('id','')
+        if not isinstance(url,str) or not url.startswith('https://checkout.stripe.com/') or not isinstance(checkout_id,str) or not re.fullmatch(r'cs_[A-Za-z0-9_]+',checkout_id):raise IntegrationError('Checkout inválido retornado pelo provedor.')
+        expires=session.get('expires_at',int(time.time())+86400)
+        if not isinstance(expires,int) or expires<=time.time() or expires>time.time()+86400+300:raise IntegrationError('Validade do checkout inválida.')
+        core.execute('UPDATE billing_checkouts SET checkout_id=?,checkout_url=?,expires_at=? WHERE user_id=? AND nonce=?',(checkout_id,url,datetime.fromtimestamp(expires,timezone.utc).isoformat(),user['id'],nonce))
     except IntegrationError as exc:
-        raise HTTPException(502, str(exc)) from None
-    url = session.get("url", "")
-    if not isinstance(url, str) or not url.startswith("https://checkout.stripe.com/"):
-        raise HTTPException(502, "O provedor não retornou um checkout válido.")
-    return {"url": url}
+        core.execute('DELETE FROM billing_checkouts WHERE user_id=? AND nonce=?',(user['id'],nonce))
+        raise HTTPException(502,str(exc)) from None
+    return {'url':url}
+
 
 
 @router.post("/api/billing/portal")
@@ -383,6 +416,9 @@ def _subscription_change(event: dict) -> dict | None:
         subscription_id = obj["subscription"]
     elif event_type in {"customer.subscription.created", "customer.subscription.updated", "customer.subscription.deleted"}:
         subscription_id = obj.get("id")
+    elif event_type in {"invoice.paid","invoice.payment_failed"}:
+        subscription_id=obj.get("subscription") or obj.get("parent",{}).get("subscription_details",{}).get("subscription")
+        if not subscription_id:return None
     else:
         return None
     if not isinstance(subscription_id, str) or not subscription_id.startswith("sub_") or not subscription_id.replace("_", "").isalnum():
@@ -400,16 +436,21 @@ def _subscription_change(event: dict) -> dict | None:
     if not isinstance(customer, str) or not customer.startswith("cus_") or not isinstance(user_id, str):
         return None
     items = subscription.get("items", {}).get("data", [])
-    configured_price = any(isinstance(item, dict) and isinstance(item.get("price"), dict) and item["price"].get("id") == core.settings.stripe_price_id for item in items)
-    if not configured_price:
-        return None
-    active = subscription.get("status") in {"active", "trialing"}
-    return {"user_id": user_id, "customer": customer, "subscription_id": subscription_id, "plan": "pro" if active else "free"}
+    from .plans import catalog
+    selected=next((p for p in catalog().values() if p['stripe_price_id'] and any(isinstance(i,dict) and isinstance(i.get('price'),dict) and i['price'].get('id')==p['stripe_price_id'] for i in items)),None)
+    if not selected:return None
+    status=subscription.get('status','inactive')
+    active=status in {'active','trialing'}
+    until=subscription.get('current_period_end') or max((i.get('current_period_end',0) for i in items if isinstance(i,dict)),default=0)
+    end=datetime.fromtimestamp(until,timezone.utc).isoformat() if isinstance(until,(int,float)) and 0<until<4102444800 else None
+    if active and core.settings.production and not end:raise HTTPException(502,'O provedor não confirmou o período da assinatura.')
+    return {'user_id':user_id,'customer':customer,'subscription_id':subscription_id,'plan':selected['id'] if active else 'free','status':status,'until':end}
+
 
 
 @router.post("/api/billing/webhook")
 async def billing_webhook(request: Request):
-    if not core.settings.stripe_webhook_secret or not core.settings.stripe_secret_key or not core.settings.stripe_price_id:
+    if not _stripe_configured():
         raise HTTPException(503, "O webhook de cobrança não está configurado.")
     length = request.headers.get("content-length")
     if length:
@@ -445,8 +486,43 @@ async def billing_webhook(request: Request):
                 existing_customer = user["stripe_customer_id"]
                 current_sub = user["stripe_subscription_id"]
                 wrong_customer = existing_customer and existing_customer != change["customer"]
-                stale_other_subscription = current_sub and current_sub != change["subscription_id"] and (user["plan"] == "pro" or change["plan"] == "free")
+                stale_other_subscription = current_sub and current_sub != change["subscription_id"] and (user["plan"] != "free" or change["plan"] == "free")
                 if not wrong_customer and not stale_other_subscription:
-                    db.execute("UPDATE users SET plan=?, stripe_customer_id=?, stripe_subscription_id=? WHERE id=?", (change["plan"], change["customer"], change["subscription_id"], change["user_id"]))
+                    db.execute("UPDATE users SET plan=?,stripe_customer_id=?,stripe_subscription_id=?,subscription_status=?,subscription_until=? WHERE id=?",(change['plan'],change['customer'],change['subscription_id'],change.get('status','active'),change.get('until'),change['user_id']))
+                    db.execute('DELETE FROM billing_checkouts WHERE user_id=?',(change['user_id'],))
+                    event_obj=event.get('data',{}).get('object',{})
+                    amount=event_obj.get('amount_paid',event_obj.get('amount_total',event_obj.get('amount_due')))
+                    if type(amount) is not int or not 0<=amount<=1_000_000_000:amount=None
+                    currency=event_obj.get('currency','brl')
+                    if currency not in {'brl','usd','eur'}:currency=None
+                    db.execute('INSERT INTO billing_history VALUES(?,?,?,?,?,?,?,?)',(event['id'],change['user_id'],event.get('type',''),change['plan'],change.get('status'),amount,currency,core.now()))
+                    if change.get('status')=='trialing':
+                        email_hash=hashlib.sha256(user['email'].strip().lower().encode()).hexdigest()
+                        db.execute('INSERT OR IGNORE INTO trial_identities VALUES(?,?)',(email_hash,core.now()))
         db.execute("INSERT INTO webhook_events (id, created_at) VALUES (?, ?)", (event["id"], core.now()))
     return {"received": True}
+
+@router.post('/api/accounts/{account_id}/permissions')
+def check_permissions(account_id:str,user:dict=Depends(core.current_user)):
+    account=core.one('SELECT * FROM accounts WHERE id=? AND user_id=?',(account_id,user['id']))
+    if not account:raise HTTPException(404,'Conta não encontrada.')
+    try:
+        token=core.decrypt_secret(account['access_token'])
+        with httpx.Client(timeout=20.0,follow_redirects=False) as client:
+            data=_provider_json(client.get(INSTAGRAM_GRAPH+'/'+core.settings.graph_version+'/'+_graph_id(account['external_id'])+'/permissions',headers={'Authorization':'Bearer '+token}),operation='a verificação de permissões')
+        granted={p.get('permission') for p in data.get('data',[]) if isinstance(p,dict) and p.get('status')=='granted'}
+        required={'instagram_business_basic','instagram_business_content_publish'}
+        return {'ok':required.issubset(granted),'required':sorted(required),'granted':sorted(required.intersection(granted))}
+    except Exception:raise HTTPException(502,'Não foi possível verificar as permissões. Confira a autorização e a revisão do aplicativo Meta.') from None
+
+
+@router.post('/api/billing/checkout/cancel')
+def cancel_checkout(user:dict=Depends(core.current_user)):
+    pending=core.one('SELECT * FROM billing_checkouts WHERE user_id=?',(user['id'],))
+    if not pending:return {'ok':True}
+    if pending['checkout_id'] and pending['expires_at']>core.now():
+        try:_stripe_request('POST','/checkout/sessions/'+pending['checkout_id']+'/expire')
+        except IntegrationError:raise HTTPException(409,'Não foi possível expirar o checkout. Ele pode ter sido concluído; atualize a assinatura antes de continuar.') from None
+    elif not pending['checkout_id'] and pending['expires_at']>core.now():raise HTTPException(409,'Aguarde a criação do checkout terminar.')
+    core.execute('DELETE FROM billing_checkouts WHERE user_id=? AND nonce=?',(user['id'],pending['nonce']))
+    return {'ok':True}

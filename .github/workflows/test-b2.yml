@@ -1,13 +1,6 @@
 name: Testar armazenamento Backblaze B2
 on:
   workflow_dispatch:
-  push:
-    branches: [feat/saas-b2-finish]
-    paths:
-      - .github/workflows/test-b2.yml
-      - autoposts/storage.py
-      - scripts/test_b2.py
-      - requirements.txt
 permissions:
   contents: read
 concurrency:

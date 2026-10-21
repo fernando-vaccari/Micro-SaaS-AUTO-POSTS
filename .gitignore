@@ -13,3 +13,7 @@ playwright-report/
 test-results/
 *.sqlite3
 *.sqlite3-*
+
+artifacts/
+.backups/
+.dev.vars

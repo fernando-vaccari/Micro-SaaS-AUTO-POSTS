@@ -69,8 +69,8 @@ def _wrap(text: str, font: ImageFont.FreeTypeFont, max_width: int) -> list[str]:
     return lines or [""]
 
 
-def _fit_text(text: str, width: int, height: int) -> tuple[ImageFont.FreeTypeFont, list[str], int]:
-    for size in range(94, 35, -2):
+def _fit_text(text: str, width: int, height: int, minimum: int = 36) -> tuple[ImageFont.FreeTypeFont, list[str], int]:
+    for size in range(94, minimum - 1, -2):
         font = _font(size, bold=True)
         lines = _wrap(text, font, width)
         line_height = math.ceil(size * 1.34)
@@ -111,13 +111,17 @@ def _background(theme: dict, image_path: Path | None) -> Image.Image:
 
 
 def _scene_frame(post: dict, scene: dict, index: int, total: int, image_path: Path | None) -> Image.Image:
-    palette = PALETTES[post.get("theme", "violet")]
+    palette = dict(PALETTES[post.get("theme", "violet")])
+    brand=post.get('brand_config') or {}
+    if isinstance(brand,str):brand=json.loads(brand)
+    color=brand.get('primary_color','')
+    if re.fullmatch(r'#[a-fA-F0-9]{6}',color):palette['accent']=tuple(bytes.fromhex(color[1:]))
     frame = _background(palette, image_path)
     draw = ImageDraw.Draw(frame)
     accent = palette["accent"]
     draw.rounded_rectangle((82, 116, 140, 174), radius=18, fill=accent)
     draw.polygon(((104, 132), (104, 158), (123, 145)), fill=palette["base"])
-    draw.text((160, 128), "AUTOPOSTS", font=_font(28, True), fill=(245, 244, 250))
+    draw.text((160, 128), str(brand.get('company_name') or 'AUTOPOSTS')[:38], font=_font(28, True), fill=(245, 244, 250))
     marker = f"{index + 1:02d} / {total:02d}"
     draw.text((WIDTH - 84 - draw.textlength(marker, font=_font(26)), 132), marker, font=_font(26), fill=(211, 209, 224))
     # A generous top/bottom safe area leaves text clear of Instagram's overlays.
@@ -140,6 +144,10 @@ def _scene_frame(post: dict, scene: dict, index: int, total: int, image_path: Pa
         x = 84 + position * (segment_width + gap)
         draw.rounded_rectangle((round(x), 1770, round(x + segment_width), 1777), radius=3,
                                fill=accent if position <= index else (75, 74, 89))
+    if brand.get('logo_asset_id'):
+        logo_path=_owned_image(post,brand['logo_asset_id'])
+        with Image.open(logo_path) as logo:
+            logo=logo.convert('RGBA');logo.thumbnail((130,130));frame.paste(logo,(WIDTH-214,1490),logo)
     return frame
 
 
@@ -147,13 +155,20 @@ def _owned_image(post: dict, asset_id: str | None) -> Path | None:
     if not asset_id:
         return None
     asset = core.one("SELECT * FROM assets WHERE id = ? AND user_id = ?", (asset_id, post["user_id"]))
-    if not asset or asset["kind"] != "image":
+    if not asset or asset["kind"] != "image" or asset.get("deleted_at"):
         raise RenderError("Uma imagem desta cena não está mais disponível na sua conta.")
     filename = asset["filename"]
     if Path(filename).name != filename:
         raise RenderError("Arquivo de imagem inválido.")
     upload_dir = (core.settings.data_dir / "uploads").resolve()
     path = upload_dir / filename
+    if not path.is_file() and asset.get('storage_key'):
+        from .storage import B2Store,StorageError
+        try:
+            content=B2Store().get_bytes(asset['storage_key'],10*1024*1024)
+            with Image.open(__import__('io').BytesIO(content)) as image:image.verify()
+            path.write_bytes(content)
+        except Exception:raise RenderError('Não foi possível recuperar a imagem privada do B2.') from None
     if not path.is_file() or path.resolve().parent != upload_dir:
         raise RenderError("Uma imagem desta cena não está mais disponível no servidor.")
     return path
@@ -219,11 +234,17 @@ def render_post(post: dict) -> str:
         lines.append(f"file 'scene-{len(scenes) - 1}.png'")
         playlist.write_text("\n".join(lines) + "\n", encoding="utf-8")
         staging_output = staging_path / "output.mp4"
+        filters=['fps=30']
+        for cut in [duration*i/len(scenes) for i in range(1,len(scenes))]:
+            filters.extend([f"fade=t=out:st={cut-.18:.3f}:d=0.18:enable='between(t,{cut-.18:.3f},{cut:.3f})'",f"fade=t=in:st={cut:.3f}:d=0.18:enable='between(t,{cut:.3f},{cut+.18:.3f})'"])
+        brand=post.get('brand_config') or '{}'
+        if isinstance(brand,str):brand=json.loads(brand)
+        if brand.get('motion',False):filters.extend(["scale=1102:1958","crop=1080:1920:x='11+10*sin(t/3)':y='19+18*cos(t/3)'"])
         command = [
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
             "-f", "concat", "-safe", "1", "-i", str(playlist),
             "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
-            "-map", "0:v:0", "-map", "1:a:0", "-vf", "fps=30",
+            "-map", "0:v:0", "-map", "1:a:0", "-vf", ",".join(filters),
             "-c:v", "libx264", "-profile:v", "high", "-preset", "veryfast", "-crf", "23",
             "-threads", "2", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k",
             "-t", str(duration), "-movflags", "+faststart", str(staging_output),
@@ -237,3 +258,42 @@ def render_post(post: dict) -> str:
         _validate_output(staging_output, duration)
         os.replace(staging_output, videos_dir / output_name)
     return output_name
+
+
+def render_image(post: dict) -> str:
+    """Real 1080x1350 JPEG; owned source images and tenant branding only."""
+    post_id=str(post.get('id',''))
+    if not re.fullmatch(r'[A-Za-z0-9_-]{1,80}',post_id):raise RenderError('Identificador inválido.')
+    scenes=post['scenes'] if isinstance(post['scenes'],list) else json.loads(post['scenes'])
+    brand=post.get('brand_config') or {}
+    if isinstance(brand,str):brand=json.loads(brand)
+    palette=dict(PALETTES.get(post.get('theme'),PALETTES['violet']))
+    color=brand.get('primary_color','')
+    if re.fullmatch(r'#[0-9a-fA-F]{6}',color):palette['accent']=tuple(bytes.fromhex(color[1:]))
+    source=_owned_image(post,scenes[0].get('asset_id')) if scenes else None
+    frame=_background(palette,source).resize((1080,1350),Image.Resampling.LANCZOS)
+    draw=ImageDraw.Draw(frame)
+    draw.rounded_rectangle((70,90,150,102),radius=6,fill=palette['accent'])
+    draw.text((70,145),str(brand.get('company_name') or 'AUTO POSTS')[:45],font=_font(30,True),fill=palette['accent'])
+    text='\n\n'.join(s.get('text','').strip() for s in scenes if s.get('text'))[:1500]
+    if brand.get('style')=='quote':text='“'+text+'”'
+    elif brand.get('style')=='tips':text='\n\n'.join('• '+s.get('text','').strip() for s in scenes if s.get('text'))
+    title_font,title_lines,title_height=_fit_text(str(post.get('title',''))[:120],940,170,24)
+    title_y=215
+    for line in title_lines:
+        draw.text((70,title_y),line,font=title_font,fill=palette['accent']);title_y+=title_height
+    font,lines,line_height=_fit_text(text,940,700,26)
+    y=max(420,420+(700-len(lines)*line_height)//2)
+    for line in lines:draw.text((70,y),line,font=font,fill=(250,249,255));y+=line_height
+    draw.text((70,1220),str(brand.get('cta') or 'Salve e compartilhe.')[:65],font=_font(24),fill=palette['accent'])
+    logo_id=brand.get('logo_asset_id')
+    if logo_id:
+        logo_path=_owned_image(post,logo_id)
+        with Image.open(logo_path) as logo:
+            logo=logo.convert('RGBA');logo.thumbnail((120,120));frame.paste(logo,(880,70),logo)
+    directory=core.settings.data_dir/'images';directory.mkdir(parents=True,exist_ok=True)
+    name=post_id+'.jpg'
+    with tempfile.NamedTemporaryFile(dir=directory,suffix='.jpg',delete=False) as f:temp=Path(f.name)
+    try:frame.save(temp,'JPEG',quality=93,optimize=True);os.replace(temp,directory/name)
+    finally:temp.unlink(missing_ok=True);frame.close()
+    return name

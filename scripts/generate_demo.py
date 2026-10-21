@@ -1,40 +1,12 @@
-import tempfile
+"""Explicit CI smoke video; importing this module has no side effects."""
 from pathlib import Path
+from uuid import uuid4
+from .render_job import render_payload
 
-from autoposts import core, media
+def main():
+    owner='demo-'+uuid4().hex
+    post={'id':'autoposts-demo','user_id':owner,'title':'Sua marca presente','caption':'Prévia local, sem publicação.','kind':'video','duration':6,'theme':'ocean','scenes':[{'text':'Seu negócio merece destaque.'},{'text':'Crie conteúdo com consistência.'},{'text':'Salve esta ideia.'}]}
+    result=render_payload({'post':post,'user_id':owner,'assets':[]},Path('artifacts'))
+    print(f'MP4 real de demonstração: {result}. Sem upload ou publicação.')
 
-with tempfile.TemporaryDirectory() as directory:
-    core.settings.data_dir = Path(directory)
-    core.init_db()
-
-    core.execute(
-        """
-        INSERT INTO users(id, email, name, password_hash, created_at)
-        VALUES (?, ?, ?, ?, ?)
-        """,
-        ("demo", "demo@example.com", "Demo", "unused", core.now()),
-    )
-
-    post = {
-        "id": "autoposts-demo",
-        "user_id": "demo",
-        "title": "Transforme suas ideias em resultados",
-        "caption": "Automatize sua presença digital!",
-        "duration": 6,
-        "theme": "ocean",
-        "scenes": [
-            {"text": "Seu negócio merece destaque!"},
-            {"text": "Crie conteúdo e publique com consistência."},
-        ],
-    }
-
-    filename = media.render_post(post)
-
-    output = Path("artifacts")
-    output.mkdir(exist_ok=True)
-
-    source = Path(directory) / "videos" / filename
-    destination = output / filename
-    destination.write_bytes(source.read_bytes())
-
-    print(f"Vídeo gerado: {destination}")
+if __name__=='__main__':main()

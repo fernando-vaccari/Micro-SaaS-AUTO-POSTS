@@ -9,11 +9,11 @@ def main():
     print(json.dumps({'boto3':boto3.__version__,'botocore':botocore.__version__,'urllib3':urllib3.__version__}),flush=True)
     key='diagnostics/autoposts-'+uuid4().hex+'.txt'
     payload=b'Auto Posts B2 round-trip verification\n'
-    stage='configuration'; attempted=False; failed=None
+    stage='configuration'; attempted=False; failed=None; result={}
     try:
         store=B2Store()
         stage='upload'; attempted=True
-        store.put_bytes(key,payload,'text/plain')
+        result=store.put_bytes(key,payload,'text/plain')
         print('Upload confirmado por HEAD.',flush=True)
         stage='read'
         if store.get_bytes(key)!=payload:raise StorageError('Conteúdo lido difere do enviado.',code='verification')
@@ -23,7 +23,7 @@ def main():
         failed={'status':'failed','stage':stage,'code':type(exc).__name__,'message':'Falha inesperada no teste; nenhum detalhe de credencial foi registrado.'}
     finally:
         if attempted:
-            try:store.delete(key);print('Objeto de diagnóstico excluído.',flush=True)
+            try:store.delete(key,result.get('version_id'));print('Objeto de diagnóstico excluído.',flush=True)
             except StorageError as exc:
                 failed=failed or {'status':'failed','stage':'delete','code':exc.code,'message':str(exc)}
     if failed:
