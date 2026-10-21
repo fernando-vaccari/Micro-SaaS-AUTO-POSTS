@@ -32,7 +32,29 @@ jobs:
 
       - name: Instalar dependencias
         run: python -m pip install -r requirements.txt
+      - name: Diagnosticar conexao Cloudflare
+        env:
+          API_URL: ${{ vars.AUTOPOSTS_API_URL }}
+          API_SECRET: ${{ secrets.AUTOPOSTS_API_SECRET }}
+        run: |
+          echo "TESTE 1 - API publica:"
+          curl -sS \
+            -o /tmp/health.txt \
+            -w "HTTP: %{http_code}\n" \
+            "$API_URL/health"
 
+          head -c 300 /tmp/health.txt
+          echo
+
+          echo "TESTE 2 - API autenticada:"
+          curl -sS \
+            -o /tmp/jobs.txt \
+            -w "HTTP: %{http_code}\n" \
+            -H "Authorization: Bearer $API_SECRET" \
+            "$API_URL/api/jobs/next"
+
+          head -c 300 /tmp/jobs.txt
+          echo
       - name: Buscar video na Cloudflare e gerar MP4
         env:
           AUTOPOSTS_API_URL: ${{ vars.AUTOPOSTS_API_URL }}
