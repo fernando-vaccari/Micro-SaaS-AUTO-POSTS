@@ -24,10 +24,10 @@ jobs:
             -w "HTTP: %{http_code}\n" \
             "https://$ENDPOINT"
 
-          echo "Verificando biblioteca Python..."
-          python -m pip show boto3 botocore | grep -E "Name:|Version:"
       - name: Instalar biblioteca do Backblaze
-        run: python -m pip install boto3
+        run: |
+          python -m pip install --user --upgrade boto3 botocore urllib3
+          python -c "import boto3, botocore; print('Boto3:', boto3.__version__, 'Botocore:', botocore.__version__)"
 
       - name: Testar envio e leitura de arquivo
         env:
@@ -40,18 +40,21 @@ jobs:
           import os
           import boto3
           from urllib.parse import urlparse
+          from botocore.config import Config
 
-          endpoint = os.environ["B2_ENDPOINT"].strip()
+          endpoint = os.environ["B2_ENDPOINT"].strip().strip('"').strip("'")
+
           if not endpoint.startswith("https://"):
               endpoint = "https://" + endpoint
 
           host = urlparse(endpoint).hostname or ""
+
           if not host.startswith("s3.") or not host.endswith(".backblazeb2.com"):
-              raise ValueError("Endpoint B2 inválido")
+              raise ValueError("Endpoint B2 invalido")
 
           region = host.removeprefix("s3.").removesuffix(".backblazeb2.com")
 
-          from botocore.config import Config
+          bucket = os.environ["B2_BUCKET_NAME"].strip().strip('"').strip("'")
 
           s3 = boto3.client(
               "s3",
@@ -64,13 +67,12 @@ jobs:
                   connect_timeout=15,
                   read_timeout=30,
                   retries={"max_attempts": 2},
-            ),
+              ),
           )
 
-          bucket = os.environ["B2_BUCKET_NAME"].strip().strip('"').strip("'")
           arquivo = "testes/conexao-autoposts.txt"
 
-          print("Testando armazenamento...")
+          print("Testando armazenamento...", flush=True)
 
           s3.put_object(
               Bucket=bucket,
@@ -79,16 +81,17 @@ jobs:
               ContentType="text/plain",
           )
 
+          print("Upload realizado!", flush=True)
+
           resposta = s3.get_object(Bucket=bucket, Key=arquivo)
           conteudo = resposta["Body"].read()
 
           assert conteudo == b"Auto Posts conectado!"
 
-          print("Upload realizado!")
-          print("Leitura confirmada!")
+          print("Leitura confirmada!", flush=True)
 
           s3.delete_object(Bucket=bucket, Key=arquivo)
 
-          print("Arquivo de teste removido!")
-          print("BACKBLAZE B2 FUNCIONANDO!")
+          print("Arquivo de teste removido!", flush=True)
+          print("BACKBLAZE B2 FUNCIONANDO!", flush=True)
           PY
