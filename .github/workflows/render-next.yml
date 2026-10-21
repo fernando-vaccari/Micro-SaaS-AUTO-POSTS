@@ -1,0 +1,48 @@
+name: Gerar video da fila Cloudflare
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: autoposts-render-next
+  cancel-in-progress: false
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Baixar projeto
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Instalar FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg fonts-dejavu-core
+
+      - name: Instalar dependencias
+        run: python -m pip install -r requirements.txt
+
+      - name: Buscar video na Cloudflare e gerar MP4
+        env:
+          AUTOPOSTS_API_URL: ${{ vars.AUTOPOSTS_API_URL }}
+          AUTOPOSTS_API_SECRET: ${{ secrets.AUTOPOSTS_API_SECRET }}
+        run: python -m scripts.render_next
+
+      - name: Disponibilizar MP4
+        uses: actions/upload-artifact@v4
+        with:
+          name: video-da-fila
+          path: artifacts/*.mp4
+          if-no-files-found: error
+          retention-days: 7
