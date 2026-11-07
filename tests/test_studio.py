@@ -339,3 +339,12 @@ def test_invalid_studio_request_keys_never_reserve_quota(client,key):
     assert client.post('/api/studio',json=payload(client),headers={'Idempotency-Key':key}).status_code==400
     assert not core.one('SELECT 1 FROM posts')
     assert not core.one('SELECT 1 FROM post_usage')
+
+
+@pytest.mark.parametrize('script',[' '.join(['x'*91]*7),('A\t'*300)+'fim'])
+def test_long_words_and_tabs_preserve_script_within_six_scenes(client,script):
+    response=client.post('/api/studio',json=payload(client,kind='image',prompt=script))
+    assert response.status_code==201,response.text
+    post=response.json()['post']
+    assert len(post['scenes'])<=6
+    assert ' '.join(s['text'] for s in post['scenes']).split()==script.split()

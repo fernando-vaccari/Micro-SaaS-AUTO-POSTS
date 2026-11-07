@@ -2,7 +2,7 @@
 
 ## Implementado e testado
 
-- **175 testes automatizados aprovados**, incluindo os anteriores. Um aviso de depreciação Starlette/httpx sem falha funcional. Os contratos antigos Stripe continuam testados explicitamente; as novas contratações usam Studio/Mercado Pago.
+- **177 testes automatizados aprovados**, incluindo os anteriores. Um aviso de depreciação Starlette/httpx sem falha funcional. Os contratos antigos Stripe continuam testados explicitamente; as novas contratações usam Studio/Mercado Pago.
 - Atualização de confiabilidade: criação atômica com reenvio idempotente, rollback de cadastro/fila/cota, rascunho temporário por usuário, progresso real e proteção contra respostas atrasadas de outra sessão. Teste Chromium simulou perda de resposta após commit, recarga e repetição sem duplicar conteúdo/crédito. [Detalhes e contrato da API](STUDIO_UPGRADES.md).
 - Texto completo preservado nas cenas mesmo com uma foto, validações do estúdio corrigidas e preservação da chave local anterior da demo. Fluxo de voz Kokoro/MP4 no navegador repetido após as alterações.
 - Login `/login` e cadastro `/cadastro`, conta individual, sessão/CSRF e isolamento de fotos, voz, biblioteca e campanhas entre clientes.

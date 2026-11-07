@@ -88,7 +88,9 @@ def _create_in_transaction(db, data, user):
         return run['post_id'], campaign_id
 
     # Preserve the complete script, including long sentences and the final invitation.
-    lines = textwrap.wrap(data.prompt, width=180, break_long_words=True, break_on_hyphens=False)
+    lines = textwrap.wrap(data.prompt, width=180, expand_tabs=False, break_long_words=True, break_on_hyphens=False)
+    if len(lines)>6:
+        lines = [*lines[:5], ' '.join(lines[5:])]
     scenes = [{'text': lines[i] if i < len(lines) else '', 'asset_id': data.asset_ids[i % len(data.asset_ids)]}
               for i in range(max(len(lines), len(data.asset_ids)))]
     post = PostInput(title=data.title, caption=data.caption or data.prompt, kind=data.kind,

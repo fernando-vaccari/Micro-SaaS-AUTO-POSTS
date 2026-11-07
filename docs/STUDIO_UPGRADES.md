@@ -36,7 +36,7 @@ Sair, expirar a sessão ou excluir a conta limpa o rascunho e os dados privados 
 
 ## Verificação
 
-175 testes Python aprovados, incluindo concorrência, consumo único, isolamento por cliente, rollback e preservação das cenas. Sintaxe Python/JavaScript verificada.
+177 testes Python aprovados, incluindo concorrência, consumo único, isolamento por cliente, rollback e preservação das cenas. Sintaxe Python/JavaScript verificada.
 
 O teste local `scripts/smoke_studio_reliability.py` usou Chromium e banco demo isolado. Ele aceitou uma criação no servidor, derrubou a confirmação no navegador, recarregou e reenviou: o mesmo pedido retornou 200, mantendo um conteúdo e um crédito. Também verificou rascunho, progresso, mobile sem overflow, logout e resposta atrasada de outra conta.
 
