@@ -1,2 +1,2 @@
-[tool.vercel]
-entrypoint = "autoposts.vercel:app"
+[tool.pytest.ini_options]
+testpaths = ["tests"]

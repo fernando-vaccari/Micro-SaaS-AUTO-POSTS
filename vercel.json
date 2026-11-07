@@ -1,10 +1,73 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "framework": "fastapi",
+  "framework": null,
+  "installCommand": "npm ci --ignore-scripts",
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
   "functions": {
-    "autoposts/vercel.py": {
-      "includeFiles": "autoposts/static/**",
+    "api/gateway.mjs": {
       "maxDuration": 60
     }
-  }
+  },
+  "rewrites": [
+    {
+      "source": "/api/:path*",
+      "destination": "/api/gateway?__autoposts_route=/api/:path*"
+    },
+    {
+      "source": "/media/:path*",
+      "destination": "/api/gateway?__autoposts_route=/media/:path*"
+    },
+    {
+      "source": "/health",
+      "destination": "/api/gateway?__autoposts_route=/health"
+    },
+    {
+      "source": "/privacy",
+      "destination": "/api/gateway?__autoposts_route=/privacy"
+    },
+    {
+      "source": "/terms",
+      "destination": "/api/gateway?__autoposts_route=/terms"
+    },
+    {
+      "source": "/data-deletion",
+      "destination": "/api/gateway?__autoposts_route=/data-deletion"
+    },
+    {
+      "source": "/login",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/cadastro",
+      "destination": "/index.html"
+    }
+  ],
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        {
+          "key": "X-Content-Type-Options",
+          "value": "nosniff"
+        },
+        {
+          "key": "X-Frame-Options",
+          "value": "DENY"
+        },
+        {
+          "key": "Referrer-Policy",
+          "value": "same-origin"
+        },
+        {
+          "key": "Permissions-Policy",
+          "value": "camera=(), microphone=(self), geolocation=()"
+        },
+        {
+          "key": "Content-Security-Policy",
+          "value": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.backblazeb2.com https://*.r2.cloudflarestorage.com; media-src 'self' blob: https://*.backblazeb2.com https://*.r2.cloudflarestorage.com; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; object-src 'none'"
+        }
+      ]
+    }
+  ]
 }

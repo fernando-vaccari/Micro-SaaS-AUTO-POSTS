@@ -24,7 +24,7 @@ def web(monkeypatch):
 
 def test_entrypoint_import_and_pages_work_without_writes_or_secrets(tmp_path):
     script='''
-import sys,tomllib
+import sys,json
 from pathlib import Path
 from unittest.mock import patch
 from fastapi.testclient import TestClient
@@ -38,7 +38,7 @@ with patch('pathlib.Path.mkdir',side_effect=AssertionError('read-only filesystem
 assert 'autoposts.core' not in sys.modules
 assert 'autoposts.main' not in sys.modules
 assert 'autoposts.worker' not in sys.modules
-assert tomllib.loads(Path('pyproject.toml').read_text())['tool']['vercel']['entrypoint']=='autoposts.vercel:app'
+assert json.loads(Path('vercel.json').read_text())['framework'] is None
 print('READ_ONLY_GATEWAY_OK')
 '''
     env={**os.environ,'APP_ENV':'production','APP_SECRET':'','DATA_DIR':str(tmp_path/'not-created'),

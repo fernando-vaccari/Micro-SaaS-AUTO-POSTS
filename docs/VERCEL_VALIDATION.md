@@ -1,37 +1,36 @@
-# Validação da correção de inicialização no Vercel
+# Validação atual: entrega estática e API Node no Vercel
 
-## Problema observado e reprodução
+A imagem mais recente do operador mostra 500 FUNCTION_INVOCATION_FAILED na página inicial e no favicon. Os testes ASGI anteriores não comprovaram o funcionamento do pacote no runtime Vercel; a configuração anterior ainda entregava o site por uma função Python. Sem o traceback de Runtime Logs, não foi confirmada a exceção específica dessa implantação.
 
-A imagem enviada mostra **500 FUNCTION_INVOCATION_FAILED**, sem traceback. Portanto, não estabelece qual exceção ocorreu no deploy da conta do operador.
+## Correção atual
 
-Na entrada anterior, importar autoposts.main já carregava core.load_settings, que pode criar .data/.app-secret. O lifespan também cria banco/diretórios e inicia workers. Em uma reprodução controlada, fazer Path.mkdir retornar EROFS (disco somente de leitura) interrompeu a importação. Produção sem APP_SECRET também interrompia a entrada antes de servir a página.
+- **Framework Other**, Node 24, `npm ci --ignore-scripts`, `npm run build`, saída **dist**. `vercel.json` declara essas opções e as rotas.
+- Página inicial, login/cadastro, JavaScript, CSS, bootstrap público e favicon são arquivos estáticos. A falha de uma função não faz o Vercel invocá-la para servir esses arquivos.
+- Somente API, mídia autenticada, saúde e páginas legais usam `api/gateway.mjs`. A função usa apenas módulos nativos Node e `web/config.mjs`; não instala/importa Python, FastAPI, banco ou modelos de IA.
+- Sem backend, acesso e cobrança ficam bloqueados com mensagem clara. Se a API falhar, o frontend usa o bootstrap público estático para exibir a página e informar indisponibilidade, sem criar conta ou sessão autenticada fictícia.
+- Cookies separados, CSRF, corpo original, query, assinatura de webhook e idempotência continuam encaminhados ao backend persistente. POST não é repetido automaticamente. Credenciais internas não vão para a saída estática nem para cabeçalhos públicos.
+- `autoposts.main:app` continua sendo o backend CPU. O antigo adaptador ASGI permanece no repositório e nos testes de compatibilidade, mas não é selecionado no Vercel.
 
-## Correção entregue
+## Evidências
 
-- Entrada Vercel em autoposts.vercel:app, sem importar core/main/worker, sem banco descartável e sem criação de chave local. O backend persistente continua autoposts.main:app no host CPU.
-- Páginas e assets incluídos no pacote; Python 3.12; exclusão de dados, ambientes privados, pesos e caches por .vercelignore.
-- Encaminhamento limitado à origem HTTPS configurada pelo operador. URLs inválidas, loop para o próprio Vercel, backend fora do ar, corpo/resposta grande e timeout retornam códigos controlados.
-- Sessão/CSRF, múltiplos Set-Cookie, corpos originais de webhooks, assinatura, query string e idempotência preservados. Nenhuma repetição automática de POST. Cookies não são compartilhados entre invocações/clientes.
-- IP por cliente encaminhado somente com chave específica compartilhada. O backend ignora cabeçalhos forjados sem essa chave; metadados internos não são devolvidos como cabeçalhos ao navegador.
-- Fotos grandes preparadas antes do upload para respeitar a margem de 4 MB. Downloads privados grandes usam o redirecionamento R2 existente.
-- Sem backend, página pública em configuração; nenhum formulário de senha/cadastro funcional, cobrança ou sessão fictícia. /health informa indisponibilidade do serviço.
+**211 testes Python** passaram, preservando o backend e os contratos ASGI. **25 testes Node** passaram para a nova entrega/API. Entre eles, um servidor faz toda API responder 500 e ainda assim /, favicon, login, cadastro e assets retornam 200.
 
-## Evidências locais
+`npm ci`, `npm test` e `npm run build` passaram. O lockfile foi gerado em diretório limpo e contém zero dependências externas de produção ou desenvolvimento. A saída não inclui banco, .env, modelos nem URL/chave privada do backend.
 
-**211 testes aprovados**, sendo 34 contratos de gateway. A entrada foi importada em processo separado, com APP_ENV=production, APP_SECRET vazio e escrita de diretórios bloqueada. Página, login, cadastro e assets retornaram 200; operações privadas retornaram 503; core/main/worker não foram importados.
+**SDK oficial @vercel/node 30.0.0:** a função foi construída em diretório isolado como Lambda nodejs24.x, handler api/gateway.mjs, com dois módulos: api/gateway.mjs e web/config.mjs. O pacote resultante foi materializado, importado e respondeu a GET /api/session e POST /api/auth/register por HTTP local. Não foi somente uma importação do código-fonte no processo de teste.
 
-Testes ligados ao backend real da aplicação por transporte ASGI validaram cadastro, cookies, dois usuários isolados, CSRF e uma criação repetida que manteve um único conteúdo/crédito no banco persistente de teste. Outros testes verificaram corpo/cabeçalhos, gzip, assinatura, redirects R2 sem baixar o objeto, tamanho, timeout e limites por IP autenticado.
+**Chromium:** página e favicon servidos diretamente; frontend continuou abrindo quando a API simulada retornou 500, usando o bootstrap estático. Cadastro ficou sem campos de senha nessa condição. Mobile 390px sem overflow. Com API Node e backend demo Python em processos distintos, conectados por HTTP de loopback, passaram cadastro/cookies, foto PNG maior que 4 MB preparada antes do envio e criação de vídeo com **Kokoro real**. O MP4 foi baixado pelo gateway e reproduzido no navegador; ffprobe confirmou H.264 1080×1920, AAC estéreo 48 kHz e 15 segundos.
 
-Chromium abriu o site sem backend, encontrou a mensagem de configuração e nenhum campo de senha; mobile 390px sem overflow. Com backend demo isolado, cadastrou um usuário, preparou foto PNG maior que 4 MB em JPEG menor que o limite, enviou as fotos, solicitou narração feminina **Kokoro real em CPU** e recebeu MP4 1080×1920 com AAC pela interface do gateway. A conexão com esse backend foi em processo local via ASGI, não um teste remoto de TLS/Vercel.
+O teste reproduzível é scripts/smoke_vercel_browser.py; `--failure-url` ativa a simulação de API em falha. O adaptador local `scripts/serve-vercel-local.mjs` serve o dist e a função padrão Node. Somente no ambiente de teste permite apontar o transporte para backend HTTP de loopback; o código de produção exige destino HTTPS público válido.
 
-O teste reproduzível de navegador é scripts/smoke_vercel_browser.py e exige servidores locais de teste/Playwright/Chromium. Artefato de vídeo em artifacts/vercel-kokoro-demo.mp4 (ignorado pelo Git); capturas públicas de teste em docs/screenshots/vercel-*.png. Nenhuma mídia de cliente real foi usada.
+Capturas em docs/screenshots/vercel-*.png. O vídeo artifacts/vercel-kokoro-demo.mp4 é ignorado pelo Git. Nenhuma foto/voz pessoal de cliente foi utilizada.
 
-Python, três módulos JavaScript, catálogo compartilhado, JSON/TOML de configuração e compatibilidade das 37 dependências instaladas foram verificados. O aviso conhecido Starlette/httpx permanece como depreciação, sem falha funcional.
+## Limites e operação
 
-## Limites desta evidência
+A URL informada é https://auto-posts-rouge.vercel.app/. A tentativa de leitura foi bloqueada pela política de saída do ambiente (túnel 403); a liberação foi salva como proposta e não comprova aplicação ao runtime. Não houve acesso autenticado ao painel/Runtime Logs Vercel nem confirmação de redeploy nessa conta.
 
-Não houve acesso aos Runtime Logs ou redeploy na conta Vercel do operador. Não foram provisionados host CPU, domínio ou credenciais. R2, Meta, Mercado Pago e SMTP não foram homologados com credenciais reais nesta correção; nenhuma publicação ou cobrança real foi feita.
+Não foram provisionados servidor CPU, domínio ou credenciais. R2, Meta, Mercado Pago e SMTP não foram homologados com credenciais reais nesta correção; não houve publicação nem cobrança real.
 
-O reparo não transforma o SaaS completo em aplicação inteiramente serverless nem garante hospedagem comercial 100% gratuita. Para operar de fato, é necessário configurar a URL HTTPS do backend persistente e suas integrações. A página pública em configuração não comprova que o serviço esteja pronto para clientes.
+A página pública funcionar não significa que o SaaS completo esteja operacional. Para login, banco persistente, geração e automação, é necessário configurar AUTOPOSTS_BACKEND_URL com um servidor CPU ativo. R2 armazena mídia e não executa esse backend. Não foi prometida hospedagem comercial ilimitada ou permanentemente gratuita.
 
-Passo a passo em [hospedagem/VERCEL.md](hospedagem/VERCEL.md).
+Passo a passo atualizado: [hospedagem/VERCEL.md](hospedagem/VERCEL.md).

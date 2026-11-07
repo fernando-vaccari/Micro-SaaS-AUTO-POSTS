@@ -23,7 +23,7 @@ def png(width, height, noise=False):
     return b'\x89PNG\r\n\x1a\n'+chunk(b'IHDR',struct.pack('>IIBBBBB',width,height,8,2,0,0,0))+chunk(b'IDAT',zlib.compress(raw))+chunk(b'IEND',b'')
 
 
-def run(setup_url, demo_url):
+def run(setup_url, demo_url, failure_url=None):
     output=Path(__file__).resolve().parent.parent/'artifacts';output.mkdir(exist_ok=True)
     with sync_playwright() as playwright:
         browser=playwright.chromium.launch(executable_path=shutil.which('chromium') or shutil.which('google-chrome'),headless=True,args=['--no-sandbox'])
@@ -41,6 +41,17 @@ def run(setup_url, demo_url):
         assert not page.evaluate('document.documentElement.scrollWidth>innerWidth')
         page.screenshot(path=str(output/'vercel-setup-mobile.png'))
         assert not errors,errors
+        if failure_url:
+            response=page.goto(failure_url,wait_until='networkidle');assert response.status==200
+            page.locator('.new-hero').wait_for()
+            assert page.request.get(failure_url+'/favicon.ico').status==200
+            assert page.locator('.deployment-notice').is_visible()
+            assert 'FUNCTION_INVOCATION_FAILED' not in page.locator('body').inner_text()
+            page.screenshot(path=str(output/'vercel-api-failure-home.png'))
+            page.goto(failure_url+'/cadastro',wait_until='networkidle')
+            page.locator('.setup-access').wait_for()
+            assert page.locator('input[type=password],input[type=email]').count()==0
+            assert not errors,errors
         context.close()
 
         context=browser.new_context(viewport={'width':1440,'height':1000},timezone_id='America/Sao_Paulo')
@@ -88,9 +99,10 @@ if __name__=='__main__':
     parser=argparse.ArgumentParser()
     parser.add_argument('--setup-url',default='http://127.0.0.1:8012')
     parser.add_argument('--demo-url',default='http://127.0.0.1:8013')
+    parser.add_argument('--failure-url',default=None)
     args=parser.parse_args()
-    for base in (args.setup_url,args.demo_url):
+    for base in filter(None,(args.setup_url,args.demo_url,args.failure_url)):
         address=urlsplit(base)
         if address.scheme!='http' or address.hostname not in {'localhost','127.0.0.1'} or address.username or address.password:
             raise SystemExit('Use somente servidores locais de teste com banco isolado.')
-    run(args.setup_url.rstrip('/'),args.demo_url.rstrip('/'))
+    run(args.setup_url.rstrip('/'),args.demo_url.rstrip('/'),args.failure_url.rstrip('/') if args.failure_url else None)

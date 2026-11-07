@@ -1,12 +1,13 @@
 # Vercel: corrigir FUNCTION_INVOCATION_FAILED e conectar o SaaS
 
-O Vercel agora usa **autoposts.vercel:app**, definido em pyproject.toml. A entrada anterior autoposts.main:app criava chave local, banco e processos contínuos; isso é incompatível com o ambiente de uma função serverless. A falha por disco somente de leitura foi reproduzida localmente. A imagem 500 enviada pelo operador não contém o traceback do deploy, portanto não confirma sozinha qual exceção aconteceu na conta Vercel.
+A página inicial e o favicon agora são entregues diretamente pelo Vercel, a partir de **dist**. Eles não invocam Python nem dependem da API. A configuração anterior ainda roteava os arquivos pela função FastAPI e a imagem enviada confirma uma falha de invocação, mas não revela sua exceção interna.
 
-A nova entrada não importa o banco, não grava APP_SECRET em arquivo, não cria SQLite em /tmp e não inicia threads de renderização ou agendamento. Ela serve a interface e encaminha as operações ao backend persistente existente.
+A API foi isolada em **api/gateway.mjs**, uma função Node 24 sem dependências externas. Ela encaminha as operações ao backend persistente existente. O pacote foi construído com o SDK oficial @vercel/node, materializado e invocado por HTTP localmente. Não importa o banco nem os modelos de IA.
 
 | Parte | Entrada / destino |
 |---|---|
-| Vercel: interface, arquivos do site e encaminhamento da API | autoposts.vercel:app |
+| Vercel: página, CSS, JavaScript, favicon e bootstrap público | arquivos de dist, servidos diretamente |
+| Vercel: encaminhamento da API | api/gateway.mjs, Node 24 |
 | Host CPU: contas, sessões, banco, fila, FFmpeg e automação | autoposts.main:app, como já usado no Docker |
 | Narração | Processador privado Kokoro no host CPU |
 | Fotos e vídeos privados em produção | Cloudflare R2 |
@@ -16,13 +17,18 @@ A nova entrada não importa o banco, não grava APP_SECRET em arquivo, não cria
 No projeto Vercel, configure:
 
 - **Root Directory:** raiz do repositório, sem selecionar autoposts ou ai_worker.
-- **Framework Preset:** FastAPI.
-- **Build Command, Install Command e Output Directory:** padrões automáticos do framework, sem comandos antigos de Workers ou servidor Uvicorn permanente.
+- **Framework Preset:** **Other**, não FastAPI.
+- **Install Command:** `npm ci --ignore-scripts`.
+- **Build Command:** `npm run build`.
+- **Output Directory:** `dist`.
+- **Node.js:** 24.x, já definido em package.json.
 - **Branch:** main, usando o commit desta correção ou mais recente.
 
-O repositório inclui pyproject.toml, vercel.json, .python-version e .vercelignore. O runtime é Python 3.12; o pacote inclui explicitamente autoposts/static/**. Pesos de IA, bancos, arquivos .env e diretórios de desenvolvimento ficam fora do upload. Não use ai_worker.app:app como entrada do site.
+vercel.json já declara essas opções. Não mantenha overrides antigos de Python/Workers no painel. Faça um novo deploy sem reaproveitar o cache da configuração anterior. Recarregar uma implantação antiga não atualiza código, rotas ou runtime.
 
-Faça um novo deploy a partir do GitHub; recarregar uma implantação antiga não atualiza o código. Esta correção não foi implantada diretamente na conta Vercel, à qual o ambiente de desenvolvimento não tem acesso.
+O código foi enviado ao GitHub; o ambiente não tem acesso autenticado à conta Vercel para alterar o projeto ou acionar redeploy pelo painel. A validação HTTP do domínio também depende de a política de rede do ambiente permitir o endereço.
+
+O build é Node sem pacotes de produção: copia os arquivos públicos e gera um favicon válido e site-config.json. O bootstrap exporta somente preço, cotas e estado público, nunca URL do backend, chaves ou credenciais. Pesos, banco, arquivos .env e código Python são excluídos do pacote Vercel. O adaptador ASGI autoposts.vercel permanece no repositório para compatibilidade e testes, mas não é mais a entrada do Vercel; pyproject.toml não seleciona FastAPI.
 
 ## 2. Conectar o backend persistente
 
@@ -44,14 +50,14 @@ O backend deve conhecer o endereço usado pelo cliente:
 
 ```dotenv
 APP_ENV=production
-APP_BASE_URL=https://seu-site.vercel.app
-INSTAGRAM_REDIRECT_URI=https://seu-site.vercel.app/api/integrations/instagram/callback
+APP_BASE_URL=https://auto-posts-rouge.vercel.app
+INSTAGRAM_REDIRECT_URI=https://auto-posts-rouge.vercel.app/api/integrations/instagram/callback
 STORAGE_BACKEND=r2
 ```
 
 Mantenha o APP_SECRET existente, com pelo menos 32 caracteres, e o volume/banco existentes. Não gere outra chave para corrigir o deploy. A chave existente protege tokens e gravações cifradas.
 
-Cadastre a mesma URL de retorno no aplicativo Meta. Para Mercado Pago, use https://seu-site.vercel.app/api/billing/mercadopago/webhook. Para domínio próprio, substitua as URLs pelo domínio público final. Esses endereços devem coincidir com APP_BASE_URL para a validação de origem/CSRF e cookies seguros.
+Cadastre a mesma URL de retorno no aplicativo Meta. Para Mercado Pago, use https://auto-posts-rouge.vercel.app/api/billing/mercadopago/webhook. Para domínio próprio, substitua as URLs pelo domínio público final. Esses endereços devem coincidir com APP_BASE_URL para a validação de origem/CSRF e cookies seguros.
 
 Para que os limites por IP diferenciem os clientes atrás do Vercel, configure também **AUTOPOSTS_GATEWAY_SECRET** com o mesmo valor aleatório forte (pelo menos 32 caracteres) no Vercel e no backend. Use uma chave específica, separada do APP_SECRET. O backend só aceita a identidade de cliente encaminhada quando essa chave confere; cabeçalhos enviados pelo usuário não bastam. Sem a chave, os limites usam o IP do proxy e podem agrupar clientes. Não envie essa chave por chat ou GitHub.
 
@@ -89,8 +95,10 @@ O gateway tem prazo total de 50 segundos, abaixo dos 60 configurados para a fun�
 
 ## Validação desta correção
 
-211 testes automatizados no conjunto completo, incluindo 34 contratos de gateway. Testes locais cobrem entrada em disco somente de leitura, ausência de APP_SECRET, cookies seguros separados, isolamento de contas, CSRF, corpo de webhook, concorrência/idempotência, limites, timeouts e erros sanitizados.
+- **211 testes Python** do backend e do adaptador ASGI preservado.
+- **25 testes Node** da nova API e da entrega estática. Um teste faz a API retornar 500 e confirma que /, favicon, login e arquivos continuam em 200.
+- `npm ci`, `npm test` e `npm run build` passaram.
+- SDK oficial @vercel/node 30.0.0 gerou Lambda nodejs24.x com apenas dois módulos. O pacote foi materializado, importado e atendeu requisições HTTP localmente, sem Python.
+- Chromium validou página pública mesmo com API simulada em 500. Com backend Python demo por HTTP local, validou cadastro/cookies, foto maior que 4 MB preparada antes de enviar e voz Kokoro real até MP4 1080×1920/AAC.
 
-Chromium validou página pública e cadastro bloqueado sem backend; com backend demo de teste, validou cadastro, foto maior que 4 MB preparada antes do upload, voz Kokoro real e MP4 1080×1920/AAC através do gateway. O backend de teste foi conectado em processo local com transporte ASGI, não a uma implantação real Vercel/R2/Meta/Mercado Pago.
-
-Consulte [relatório específico](../VERCEL_VALIDATION.md) e [guia principal](../../GUIA-DE-INSTALACAO/README.md). Fontes oficiais: https://vercel.com/docs/frameworks/backend/fastapi e https://vercel.com/docs/functions/limitations .
+Essas evidências não comprovam um redeploy na conta do operador. Nenhuma publicação Meta ou cobrança foi executada. Consulte [relatório específico](../VERCEL_VALIDATION.md) e [guia principal](../../GUIA-DE-INSTALACAO/README.md).

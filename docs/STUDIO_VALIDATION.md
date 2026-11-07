@@ -1,6 +1,6 @@
 # AUTO POSTS Studio — relatório da entrega (7/11/2026)
 
-Atualização de hospedagem: a entrada Vercel foi separada do backend persistente. O conjunto atual possui **211 testes aprovados**; detalhes do ambiente somente de leitura, gateway e evidência no navegador em [VERCEL_VALIDATION](VERCEL_VALIDATION.md). O relatório abaixo conserva o histórico da entrega do estúdio.
+Atualização de hospedagem: o Vercel usa agora arquivos estáticos e API Node, mantendo o backend Python persistente separado. Passaram **211 testes Python e 25 testes Node**; detalhes do pacote oficial Vercel e dos testes no navegador em [VERCEL_VALIDATION](VERCEL_VALIDATION.md). O relatório abaixo conserva o histórico da entrega do estúdio.
 
 ## Implementado e testado
 

@@ -1,4 +1,4 @@
-"""Vercel web entrypoint: no local database, secrets file, scheduler or AI model.
+"""Optional ASGI gateway; the Vercel deployment now uses api/gateway.mjs.
 
 The persistent application remains autoposts.main:app on its CPU host. Forward
 requests once, preserving cookies, CSRF, signed webhooks and idempotency keys.

@@ -4,7 +4,7 @@ SaaS em português para transformar fotos do negócio e um prompt em imagens e R
 
 **Comece pela pasta [GUIA-DE-INSTALACAO](GUIA-DE-INSTALACAO/README.md).** Ela reúne os passos de hospedagem, R2, IA, Instagram e gateway. Nenhuma credencial real está no repositório.
 
-**Deploy no Vercel:** use [o guia Vercel](docs/hospedagem/VERCEL.md). A entrada específica `autoposts.vercel:app` serve o site e encaminha a API ao backend persistente configurado em `AUTOPOSTS_BACKEND_URL`. Sem esse destino, o site abre em modo de configuração, com cadastro/cobrança bloqueados. O backend completo continua em `autoposts.main:app` no host CPU; banco e automação não foram transferidos para disco temporário.
+**Deploy no Vercel:** use [o guia Vercel](docs/hospedagem/VERCEL.md). A configuração atual é **Other**, build `npm run build`, saída `dist`. Página inicial e favicon são arquivos estáticos; somente a API usa `api/gateway.mjs` em Node 24. Não selecione uma entrada Python no Vercel. O backend persistente continua em `autoposts.main:app` no host CPU e é conectado por `AUTOPOSTS_BACKEND_URL`. Sem ele, login, geração e cobrança ficam indisponíveis; não há banco descartável.
 
 ## Duas edições, um único código
 
@@ -48,7 +48,7 @@ Demo completa com processador CPU:
 docker compose --env-file .env.demo -f compose.demo.yaml up -d --build
 ```
 
-Não é necessário build Node: FastAPI serve a interface. Variáveis em .env.example e .env.demo.example. O instalador de edições preserva valores existentes e reutiliza uma chave local anterior, evitando invalidar os tokens cifrados.
+No host CPU, FastAPI serve a interface diretamente. No Vercel, execute `npm ci` e `npm run build` para gerar o site estático em `dist`. Variáveis em .env.example e .env.demo.example. O instalador de edições preserva valores existentes e reutiliza uma chave local anterior, evitando invalidar os tokens cifrados.
 
 ```bash
 .venv/bin/python -m pytest -q

@@ -24,3 +24,5 @@ artifacts/
 .venv-ai/
 .models/
 .vercel/
+
+dist/

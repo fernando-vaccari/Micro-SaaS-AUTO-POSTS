@@ -8,6 +8,15 @@
 .venv
 .venv-ai
 .models
+autoposts/*.py
+requirements.txt
+requirements.in
+pyproject.toml
+.python-version
+Dockerfile
+Dockerfile.ai
+compose*.yaml
+dist
 .backups
 .dev.vars
 __pycache__
