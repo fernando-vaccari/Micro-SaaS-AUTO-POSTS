@@ -266,23 +266,29 @@ def list_campaigns(user: dict = Depends(core.current_user)) -> dict:
 @router.post('', status_code=201)
 def create_campaign(data: CampaignInput, user: dict = Depends(core.current_user)) -> dict:
     validate_input(data, user)
-    campaign_id, stamp = core.uid(), core.now()
     with core.connect() as db:
         db.execute('BEGIN IMMEDIATE')
-        count = db.execute('SELECT COUNT(*) FROM campaigns WHERE user_id = ?', (user['id'],)).fetchone()[0]
-        if count >= 20:
-            raise HTTPException(422, 'O limite é de 20 automações por conta.')
-        db.execute('''INSERT INTO campaigns
-            (id,user_id,name,niche,audience,tone,cta,topics,mode,account_id,timezone,times,enabled,next_run_at,created_at,updated_at)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''', (
-            campaign_id, user['id'], data.name.strip(), data.niche.strip(), data.audience, data.tone,
-            data.cta, json.dumps(data.topics, ensure_ascii=False), data.mode, data.account_id,
-            data.timezone, json.dumps(data.times), int(data.enabled),
-            next_occurrence(data.times, data.timezone,weekdays=data.weekdays) if data.enabled else None, stamp, stamp,
-        ))
-        db.execute('UPDATE campaigns SET kind=?,duration=?,weekdays=?,company_name=?,objective=?,brand_config=? WHERE id=?',(data.kind,data.duration,json.dumps(data.weekdays),data.company_name,data.objective,json.dumps(data.brand_config),campaign_id))
-        db.execute('UPDATE campaigns SET creative_config=? WHERE id=?',(json.dumps(data.creative_config),campaign_id))
+        campaign_id = insert_campaign(db, data, user)
     return {'campaign': public_campaign(owned_campaign(campaign_id, user))}
+
+
+def insert_campaign(db: sqlite3.Connection, data: CampaignInput, user: dict) -> str:
+    """Insert a validated campaign in the caller's transaction."""
+    campaign_id, stamp = core.uid(), core.now()
+    count = db.execute('SELECT COUNT(*) FROM campaigns WHERE user_id = ?', (user['id'],)).fetchone()[0]
+    if count >= 20:
+        raise HTTPException(422, 'O limite é de 20 automações por conta.')
+    db.execute('''INSERT INTO campaigns
+        (id,user_id,name,niche,audience,tone,cta,topics,mode,account_id,timezone,times,enabled,next_run_at,created_at,updated_at)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''', (
+        campaign_id, user['id'], data.name.strip(), data.niche.strip(), data.audience, data.tone,
+        data.cta, json.dumps(data.topics, ensure_ascii=False), data.mode, data.account_id,
+        data.timezone, json.dumps(data.times), int(data.enabled),
+        next_occurrence(data.times, data.timezone,weekdays=data.weekdays) if data.enabled else None, stamp, stamp,
+    ))
+    db.execute('UPDATE campaigns SET kind=?,duration=?,weekdays=?,company_name=?,objective=?,brand_config=? WHERE id=?',(data.kind,data.duration,json.dumps(data.weekdays),data.company_name,data.objective,json.dumps(data.brand_config),campaign_id))
+    db.execute('UPDATE campaigns SET creative_config=? WHERE id=?',(json.dumps(data.creative_config),campaign_id))
+    return campaign_id
 
 
 def _pause_scheduled(db: sqlite3.Connection, campaign_id: str, stamp: str) -> None:
@@ -341,50 +347,55 @@ def delete_campaign(campaign_id: str, user: dict = Depends(core.current_user)) -
 
 def enqueue(campaign_id: str, *, preview: bool, scheduled_for: str | None = None) -> dict:
     """Atomically reserve quota, the unique outbox item, and a draft post."""
-    stamp = core.now()
     with core.connect() as db:
         db.execute('BEGIN IMMEDIATE')
-        row = db.execute('SELECT * FROM campaigns WHERE id = ?', (campaign_id,)).fetchone()
-        if not row:
-            raise HTTPException(404, 'Automação não encontrada.')
-        campaign = dict(row)
-        if not preview and not campaign['enabled']:
-            raise HTTPException(409, 'A automação está pausada.')
-        if scheduled_for:
-            prior = db.execute('SELECT * FROM automation_runs WHERE campaign_id = ? AND scheduled_for = ?',
-                               (campaign_id, scheduled_for)).fetchone()
-            if prior:
-                return dict(prior)
-        busy = db.execute("SELECT 1 FROM automation_runs WHERE campaign_id = ? AND status IN ('queued','generating','rendering') LIMIT 1",
-                          (campaign_id,)).fetchone()
-        if busy:
-            raise HTTPException(409, 'Esta automação já está preparando um vídeo. Aguarde a conclusão.')
-        from .plans import reserve
-        try:reserve(db,campaign['user_id'],campaign.get('kind','video'))
-        except HTTPException as exc:
-            if exc.status_code==403:raise HTTPException(429,str(exc.detail)) from None
-            raise
-        post_id, run_id = core.uid(), core.uid()
-        db.execute('''INSERT INTO posts
-            (id,user_id,title,caption,scenes,duration,theme,status,public_token,created_at,updated_at)
-            VALUES(?,?,?,?,?,24,'violet','draft',?,?,?)''', (
-            post_id, campaign['user_id'], 'Preparando: ' + campaign['name'], '',
-            json.dumps([{'text': 'Conteúdo em preparação.', 'asset_id': None}]),
-            secrets.token_urlsafe(32), stamp, stamp,
-        ))
-        db.execute('''INSERT INTO automation_runs
-            (id,campaign_id,user_id,scheduled_for,preview,status,post_id,topic_index,created_at,updated_at)
-            VALUES(?,?,?,?,?,'queued',?,?,?,?)''', (
-            run_id, campaign_id, campaign['user_id'], scheduled_for or 'preview:' + run_id,
-            int(preview), post_id, campaign['generation_index'], stamp, stamp,
-        ))
-        brand=json.loads(campaign.get('brand_config') or '{}')
-        brand['company_name']=campaign.get('company_name') or brand.get('company_name','')
-        brand['cta']=campaign['cta'] or brand.get('cta','')
-        db.execute('UPDATE posts SET kind=?,duration=?,brand_config=?,creative_config=? WHERE id=?',(campaign.get('kind','video'),campaign.get('duration',45),json.dumps(brand),campaign.get('creative_config') or '{}',post_id))
-        db.execute('UPDATE campaigns SET generation_index = generation_index + 1, last_error = NULL, updated_at = ? WHERE id = ?',
-                   (stamp, campaign_id))
-        result = dict(db.execute('SELECT * FROM automation_runs WHERE id = ?', (run_id,)).fetchone())
+        return enqueue_run(db, campaign_id, preview=preview, scheduled_for=scheduled_for)
+
+
+def enqueue_run(db: sqlite3.Connection, campaign_id: str, *, preview: bool, scheduled_for: str | None = None) -> dict:
+    """Reserve the run, post and usage inside an existing write transaction."""
+    stamp = core.now()
+    row = db.execute('SELECT * FROM campaigns WHERE id = ?', (campaign_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, 'Automação não encontrada.')
+    campaign = dict(row)
+    if not preview and not campaign['enabled']:
+        raise HTTPException(409, 'A automação está pausada.')
+    if scheduled_for:
+        prior = db.execute('SELECT * FROM automation_runs WHERE campaign_id = ? AND scheduled_for = ?',
+                           (campaign_id, scheduled_for)).fetchone()
+        if prior:
+            return dict(prior)
+    busy = db.execute("SELECT 1 FROM automation_runs WHERE campaign_id = ? AND status IN ('queued','generating','rendering') LIMIT 1",
+                      (campaign_id,)).fetchone()
+    if busy:
+        raise HTTPException(409, 'Esta automação já está preparando um vídeo. Aguarde a conclusão.')
+    from .plans import reserve
+    try:reserve(db,campaign['user_id'],campaign.get('kind','video'))
+    except HTTPException as exc:
+        if exc.status_code==403:raise HTTPException(429,str(exc.detail)) from None
+        raise
+    post_id, run_id = core.uid(), core.uid()
+    db.execute('''INSERT INTO posts
+        (id,user_id,title,caption,scenes,duration,theme,status,public_token,created_at,updated_at)
+        VALUES(?,?,?,?,?,24,'violet','draft',?,?,?)''', (
+        post_id, campaign['user_id'], 'Preparando: ' + campaign['name'], '',
+        json.dumps([{'text': 'Conteúdo em preparação.', 'asset_id': None}]),
+        secrets.token_urlsafe(32), stamp, stamp,
+    ))
+    db.execute('''INSERT INTO automation_runs
+        (id,campaign_id,user_id,scheduled_for,preview,status,post_id,topic_index,created_at,updated_at)
+        VALUES(?,?,?,?,?,'queued',?,?,?,?)''', (
+        run_id, campaign_id, campaign['user_id'], scheduled_for or 'preview:' + run_id,
+        int(preview), post_id, campaign['generation_index'], stamp, stamp,
+    ))
+    brand=json.loads(campaign.get('brand_config') or '{}')
+    brand['company_name']=campaign.get('company_name') or brand.get('company_name','')
+    brand['cta']=campaign['cta'] or brand.get('cta','')
+    db.execute('UPDATE posts SET kind=?,duration=?,brand_config=?,creative_config=? WHERE id=?',(campaign.get('kind','video'),campaign.get('duration',45),json.dumps(brand),campaign.get('creative_config') or '{}',post_id))
+    db.execute('UPDATE campaigns SET generation_index = generation_index + 1, last_error = NULL, updated_at = ? WHERE id = ?',
+               (stamp, campaign_id))
+    result = dict(db.execute('SELECT * FROM automation_runs WHERE id = ?', (run_id,)).fetchone())
     return result
 
 

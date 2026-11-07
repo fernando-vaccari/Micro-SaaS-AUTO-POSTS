@@ -37,6 +37,11 @@ def init_extensions(db):
     CREATE TABLE IF NOT EXISTS billing_history(id TEXT PRIMARY KEY,user_id TEXT REFERENCES users(id) ON DELETE SET NULL,event_type TEXT NOT NULL,plan TEXT,status TEXT,amount INTEGER,currency TEXT,created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS billing_checkouts(user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,plan TEXT NOT NULL,nonce TEXT NOT NULL,checkout_id TEXT,checkout_url TEXT,expires_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS trial_identities(email_hash TEXT PRIMARY KEY,created_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS studio_requests(
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      request_key TEXT NOT NULL,request_hash TEXT NOT NULL,
+      post_id TEXT REFERENCES posts(id) ON DELETE SET NULL,campaign_id TEXT,created_at TEXT NOT NULL,
+      PRIMARY KEY(user_id,request_key));
     CREATE TABLE IF NOT EXISTS persistent_rate_limits(key TEXT PRIMARY KEY,count INTEGER NOT NULL,expires_at REAL NOT NULL);
     CREATE TABLE IF NOT EXISTS deletion_requests(user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,created_at TEXT NOT NULL,last_error TEXT);
     ''')

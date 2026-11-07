@@ -208,3 +208,143 @@ def test_configure_editions_preserves_the_existing_encryption_key(tmp_path,monke
     assert len(demo['DEMO_APP_SECRET'])>=32 and demo['AI_MEDIA_TOKEN']==live['AI_MEDIA_TOKEN']
     setup.prepare();assert dotenv_values(tmp_path/'.env')==live and dotenv_values(tmp_path/'.env.demo')==demo
     assert prior not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize('changes',[
+    {'prompt':'   '}, {'title':'  '}, {'timezone':'invalid/timezone'},
+    {'voice_mode':'original'},
+])
+def test_studio_invalid_fields_return_validation_errors(client,changes):
+    assert client.post('/api/studio',json=payload(client,**changes)).status_code==422
+    assert not core.one('SELECT 1 FROM posts')
+
+
+def test_studio_duplicate_photos_return_validation_error(client):
+    data=payload(client);data['asset_ids']*=2
+    assert client.post('/api/studio',json=data).status_code==422
+
+
+def test_studio_retry_is_idempotent_and_rejects_a_changed_request(client):
+    data=payload(client)
+    headers={'Idempotency-Key':'studio-request-1234567890'}
+    first=client.post('/api/studio',json=data,headers=headers)
+    replay=client.post('/api/studio',json=data,headers=headers)
+    assert first.status_code==201 and replay.status_code==200
+    assert first.json()['post']['id']==replay.json()['post']['id']
+    assert replay.headers['Idempotency-Replayed']=='true'
+    assert core.one('SELECT COUNT(*) AS n FROM posts')['n']==1
+    assert core.one('SELECT count FROM post_usage')['count']==1
+    assert core.one('SELECT COUNT(*) AS n FROM media_jobs')['n']==1
+    assert client.post('/api/studio',json={**data,'prompt':'Outro roteiro.'},headers=headers).status_code==409
+
+
+def test_studio_retry_after_post_deletion_does_not_recreate_it(client):
+    data=payload(client,kind='image');headers={'Idempotency-Key':'deleted-request-1234567890'}
+    created=client.post('/api/studio',json=data,headers=headers).json()['post']
+    core.execute("UPDATE posts SET status='ready' WHERE id=?",(created['id'],))
+    assert client.delete('/api/posts/'+created['id']).status_code==200
+    assert client.post('/api/studio',json=data,headers=headers).status_code==410
+    assert not core.one('SELECT 1 FROM posts')
+    assert core.one('SELECT count FROM image_usage')['count']==1
+
+
+def test_studio_queue_failure_rolls_back_creation_and_quota(client,monkeypatch):
+    data=payload(client)
+    def fail(*args,**kwargs):raise RuntimeError('simulated internal queue failure')
+    monkeypatch.setattr(jobs,'enqueue',fail)
+    with pytest.raises(RuntimeError):client.post('/api/studio',json=data,headers={'Idempotency-Key':'rollback-request-1234567890'})
+    assert not core.one('SELECT 1 FROM posts')
+    assert not core.one('SELECT 1 FROM post_usage')
+
+
+def test_studio_keeps_the_entire_script_with_one_photo(client):
+    data=payload(client,prompt='Primeira mensagem. Segunda mensagem. Visite nossa loja hoje!')
+    result=client.post('/api/studio',json=data);assert result.status_code==201
+    post=core.one('SELECT * FROM posts')
+    from autoposts import creative
+    renderer=Mock(return_value='unused.mp4')
+    creative.render(post,renderer)
+    texts=' '.join(s['text'] for s in renderer.call_args.args[0]['scenes'])
+    assert 'Segunda mensagem.' in texts and 'Visite nossa loja hoje!' in texts
+
+
+def test_creative_reuses_photos_without_dropping_scenes(client):
+    data=payload(client);assert client.post('/api/studio',json=data).status_code==201
+    post=core.one('SELECT * FROM posts')
+    post['scenes']=json.dumps([{'text':s} for s in ['Abertura','Mensagem','Convite final']])
+    from autoposts import creative
+    renderer=Mock(return_value='unused.mp4');creative.render(post,renderer)
+    scenes=renderer.call_args.args[0]['scenes']
+    assert [s['text'] for s in scenes]==['Abertura','Mensagem','Convite final']
+    assert all(s['asset_id']==data['asset_ids'][0] for s in scenes)
+
+
+def test_concurrent_studio_retries_reserve_only_one_credit(client):
+    from concurrent.futures import ThreadPoolExecutor
+    data=payload(client);headers={'Idempotency-Key':'parallel-request-1234567890'}
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        results=list(pool.map(lambda _:client.post('/api/studio',json=data,headers=headers),range(3)))
+    assert sorted(r.status_code for r in results)==[200,200,201]
+    assert len({r.json()['post']['id'] for r in results})==1
+    assert core.one('SELECT count FROM post_usage')['count']==1
+
+
+def test_automatic_studio_retry_with_long_title_is_atomic(client,monkeypatch):
+    monkeypatch.setenv('APP_EDITION','demo');monkeypatch.setattr(core.settings,'base_url','https://studio.example.com')
+    monkeypatch.setenv('PLAN_STUDIO_VIDEOS','1')
+    owner=core.one('SELECT id FROM users')['id']
+    core.execute('INSERT INTO accounts(id,user_id,provider,external_id,platform_username,access_token,created_at) VALUES(?,?,?,?,?,?,?)',
+                 ('instagram-owned',owner,'instagram','17841401234567890','business',core.encrypt_secret('test-token'),core.now()))
+    data=payload(client,title='Meu negócio '+('especial '*11),company_name='AB',auto_publish=True,account_id='instagram-owned')
+    headers={'Idempotency-Key':'campaign-request-1234567890'}
+    first=client.post('/api/studio',json=data,headers=headers);assert first.status_code==201,first.text
+    replay=client.post('/api/studio',json=data,headers=headers);assert replay.status_code==200,replay.text
+    assert replay.json()['campaign']['id']==first.json()['campaign']['id']
+    assert core.one('SELECT COUNT(*) AS n FROM campaigns')['n']==1
+    assert core.one('SELECT COUNT(*) AS n FROM automation_runs')['n']==1
+    assert core.one('SELECT count FROM post_usage')['count']==1
+    assert client.post('/api/studio',json=data,headers={'Idempotency-Key':'another-campaign-1234567890'}).status_code==429
+    assert core.one('SELECT COUNT(*) AS n FROM campaigns')['n']==1
+    assert core.one('SELECT COUNT(*) AS n FROM studio_requests')['n']==1
+
+
+def test_idempotency_keys_are_scoped_to_the_authenticated_user(client):
+    headers={'Idempotency-Key':'shared-request-1234567890'}
+    first=client.post('/api/studio',json=payload(client),headers=headers).json()['post']
+    assert client.post('/api/auth/logout').status_code==200
+    registered=client.post('/api/auth/register',json={'name':'Outra pessoa','email':'other@example.com','password':'other-password-123'})
+    assert registered.status_code==201
+    second=client.post('/api/studio',json=payload(client),headers=headers)
+    assert second.status_code==201 and second.json()['post']['id']!=first['id']
+    assert client.get('/api/posts/'+first['id']).status_code==404
+
+
+def test_configure_editions_keeps_a_preexisting_demo_encryption_key(tmp_path,monkeypatch,capsys):
+    from scripts import configure_editions as setup
+    from dotenv import dotenv_values
+    monkeypatch.setattr(setup,'ROOT',tmp_path)
+    (tmp_path/'.env.example').write_text('APP_SECRET=\nAI_MEDIA_TOKEN=\n')
+    (tmp_path/'.env.demo.example').write_text('DEMO_APP_SECRET=\nDEMO_DATA_DIR=old-demo\n')
+    (tmp_path/'old-demo').mkdir()
+    previous='old-demo-test-encryption-key-more-than-32-chars'
+    (tmp_path/'old-demo'/'.app-secret').write_text(previous)
+    setup.prepare()
+    assert dotenv_values(tmp_path/'.env.demo')['DEMO_APP_SECRET']==previous
+    assert dotenv_values(tmp_path/'.env')['APP_SECRET']!=previous
+    assert previous not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize('key',['short','request with spaces 1234567890','x'*129])
+def test_invalid_studio_request_keys_never_reserve_quota(client,key):
+    assert client.post('/api/studio',json=payload(client),headers={'Idempotency-Key':key}).status_code==400
+    assert not core.one('SELECT 1 FROM posts')
+    assert not core.one('SELECT 1 FROM post_usage')
+
+
+@pytest.mark.parametrize('script',[' '.join(['x'*91]*7),('A\t'*300)+'fim'])
+def test_long_words_and_tabs_preserve_script_within_six_scenes(client,script):
+    response=client.post('/api/studio',json=payload(client,kind='image',prompt=script))
+    assert response.status_code==201,response.text
+    post=response.json()['post']
+    assert len(post['scenes'])<=6
+    assert ' '.join(s['text'] for s in post['scenes']).split()==script.split()

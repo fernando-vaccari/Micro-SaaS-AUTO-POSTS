@@ -59,7 +59,9 @@ def render(post, renderer):
     except HTTPException as exc:raise media.RenderError(str(exc.detail)) from None
     prepared=dict(post)
     scenes=json.loads(post['scenes']) if isinstance(post['scenes'],str) else post['scenes']
-    prepared['scenes']=[{'text':scenes[min(i,len(scenes)-1)].get('text',''),'asset_id':asset_id} for i,asset_id in enumerate(config.asset_ids)]
+    prepared['scenes']=[{'text':scenes[i].get('text','') if i<len(scenes) else '',
+                        'asset_id':config.asset_ids[i%len(config.asset_ids)]}
+                       for i in range(max(len(scenes),len(config.asset_ids)))]
     with tempfile.TemporaryDirectory(dir=core.settings.data_dir/'tmp',prefix='studio-') as directory:
         directory=Path(directory)
         if config.voice_mode!='none':

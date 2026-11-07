@@ -16,9 +16,13 @@ def prepare():
     if not data_dir.is_absolute():data_dir=ROOT/data_dir
     prior=data_dir/'.app-secret'
     main_secret=prior.read_text().strip() if prior.is_file() else secrets.token_urlsafe(48)
+    demo_values=dotenv_values(demo);demo_dir=Path(demo_values.get('DEMO_DATA_DIR') or ROOT/'.data-demo')
+    if not demo_dir.is_absolute():demo_dir=ROOT/demo_dir
+    demo_prior=demo_dir/'.app-secret'
+    demo_secret=demo_prior.read_text().strip() if demo_prior.is_file() else secrets.token_urlsafe(48)
     shared=values.get('AI_MEDIA_TOKEN') or secrets.token_urlsafe(40)
     for destination,names in [(main,{'APP_SECRET':main_secret,'AI_MEDIA_TOKEN':shared}),
-                              (demo,{'DEMO_APP_SECRET':secrets.token_urlsafe(48),'AI_MEDIA_TOKEN':shared})]:
+                              (demo,{'DEMO_APP_SECRET':demo_secret,'AI_MEDIA_TOKEN':shared})]:
         text=destination.read_text();values=dotenv_values(destination)
         for key,value in names.items():
             if values.get(key):continue

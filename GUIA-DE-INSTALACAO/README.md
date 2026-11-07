@@ -19,3 +19,5 @@ Há duas edições do mesmo aplicativo: comercial por R$149,99/mês e demonstra�
 Código, FFmpeg e modelos padrão não exigem API paga. Isso não garante capacidade gratuita ilimitada, disponibilidade de um host grátis, nem elimina tarifas Mercado Pago ou cobranças por uso excedente do R2. A versão de demonstração não exige assinatura do cliente; os recursos usados por ela continuam sujeitos aos limites do host.
 
 Veja [pesquisa de modelos e licenças](../docs/ias-gratuitas/README.md), [relatório da entrega](../docs/STUDIO_VALIDATION.md) e [operação](../docs/OPERATIONS.md). Não há promessa de vídeos generativos indistinguíveis da realidade: o modo padrão usa suas fotos reais com movimento, texto e voz sintetizada.
+
+A atualização mais recente inclui recuperação de rascunho, progresso da criação e reenvio seguro após queda de conexão. Veja [as melhorias e como atualizar sem apagar dados](../docs/STUDIO_UPGRADES.md).
