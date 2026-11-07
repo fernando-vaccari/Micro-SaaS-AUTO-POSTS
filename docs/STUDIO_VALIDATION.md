@@ -2,7 +2,9 @@
 
 ## Implementado e testado
 
-- **158 testes automatizados aprovados**, incluindo os anteriores. Um aviso de depreciação Starlette/httpx sem falha funcional. Os contratos antigos Stripe continuam testados explicitamente; as novas contratações usam Studio/Mercado Pago.
+- **175 testes automatizados aprovados**, incluindo os anteriores. Um aviso de depreciação Starlette/httpx sem falha funcional. Os contratos antigos Stripe continuam testados explicitamente; as novas contratações usam Studio/Mercado Pago.
+- Atualização de confiabilidade: criação atômica com reenvio idempotente, rollback de cadastro/fila/cota, rascunho temporário por usuário, progresso real e proteção contra respostas atrasadas de outra sessão. Teste Chromium simulou perda de resposta após commit, recarga e repetição sem duplicar conteúdo/crédito. [Detalhes e contrato da API](STUDIO_UPGRADES.md).
+- Texto completo preservado nas cenas mesmo com uma foto, validações do estúdio corrigidas e preservação da chave local anterior da demo. Fluxo de voz Kokoro/MP4 no navegador repetido após as alterações.
 - Login `/login` e cadastro `/cadastro`, conta individual, sessão/CSRF e isolamento de fotos, voz, biblioteca e campanhas entre clientes.
 - Estúdio guiado com fotos, prompt, marca, narração e autorização de piloto automático. Criação inicial e rotina recorrente usam a fila persistente existente. Teste sem Meta real demonstrou campanha → geração → arquivo pronto → agendamento automático.
 - **Kokoro ONNX real em CPU**, feminina PT-BR Dora e masculina PT-BR Alex. Pesos oficiais conferidos por SHA-256. Amostras reais no frontend; medição observada em docs/ias-gratuitas/. Não é voz clonada do usuário nem avaliação de indistinguibilidade humana.

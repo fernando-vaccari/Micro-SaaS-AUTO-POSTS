@@ -73,4 +73,6 @@ Código/modelos padrão são gratuitos, mas hospedagem gratuita não garante dis
 
 Veja [STUDIO_VALIDATION](docs/STUDIO_VALIDATION.md): testes locais, evidências de voz real/MP4/navegador, arquivos modificados e integrações ainda aguardando configuração externa. Instagram, R2 e Mercado Pago devem ser homologados na conta do operador antes de vender.
 
+[Melhorias recentes](docs/STUDIO_UPGRADES.md): tentativas repetidas não duplicam conteúdo/crédito, rascunho temporário por usuário, progresso real da criação e roteiro completo mesmo com uma única foto. A atualização preserva o banco e as integrações anteriores.
+
 A versão anterior permanece em `archive/pre-studio-20261107`; outras versões foram preservadas nas branches de arquivo existentes. Esta entrega continua FastAPI/SQLite e o frontend existente, com migrações aditivas e isolamento entre usuários.

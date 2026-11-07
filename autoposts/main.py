@@ -281,17 +281,22 @@ def posts(user: User):
 @app.post('/api/posts', status_code=201)
 def create_post(data: PostInput, user: User):
     verify_assets(data, user)
-    post_id = uid()
-    timestamp = now()
-    month = datetime.now(timezone.utc).strftime('%Y-%m')
     with connect() as db:
         db.execute('BEGIN IMMEDIATE')
-        from .plans import reserve
-        reserve(db,user['id'],data.kind)
-        db.execute('INSERT INTO posts(id,user_id,title,caption,scenes,duration,theme,public_token,created_at,updated_at,kind,brand_config) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
-                   (post_id,user['id'],data.title,data.caption,json.dumps([scene.model_dump() for scene in data.scenes]),data.duration,data.theme,secrets.token_urlsafe(32),timestamp,timestamp,data.kind,json.dumps(data.brand_config.model_dump())))
-        db.execute('UPDATE posts SET creative_config=? WHERE id=?',(data.creative_config.model_dump_json(),post_id))
+        post_id = insert_post(db, data, user)
     return {'post': public_post(owned_post(post_id, user))}
+
+
+def insert_post(db, data: PostInput, user: dict) -> str:
+    """Reserve usage and insert a validated post in the caller's transaction."""
+    post_id = uid()
+    timestamp = now()
+    from .plans import reserve
+    reserve(db,user['id'],data.kind)
+    db.execute('INSERT INTO posts(id,user_id,title,caption,scenes,duration,theme,public_token,created_at,updated_at,kind,brand_config) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
+               (post_id,user['id'],data.title,data.caption,json.dumps([scene.model_dump() for scene in data.scenes]),data.duration,data.theme,secrets.token_urlsafe(32),timestamp,timestamp,data.kind,json.dumps(data.brand_config.model_dump())))
+    db.execute('UPDATE posts SET creative_config=? WHERE id=?',(data.creative_config.model_dump_json(),post_id))
+    return post_id
 
 
 @app.get('/api/posts/{post_id}')
