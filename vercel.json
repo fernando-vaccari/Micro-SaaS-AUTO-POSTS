@@ -1,0 +1,10 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "fastapi",
+  "functions": {
+    "autoposts/vercel.py": {
+      "includeFiles": "autoposts/static/**",
+      "maxDuration": 60
+    }
+  }
+}

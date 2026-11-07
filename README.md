@@ -4,6 +4,8 @@ SaaS em português para transformar fotos do negócio e um prompt em imagens e R
 
 **Comece pela pasta [GUIA-DE-INSTALACAO](GUIA-DE-INSTALACAO/README.md).** Ela reúne os passos de hospedagem, R2, IA, Instagram e gateway. Nenhuma credencial real está no repositório.
 
+**Deploy no Vercel:** use [o guia Vercel](docs/hospedagem/VERCEL.md). A entrada específica `autoposts.vercel:app` serve o site e encaminha a API ao backend persistente configurado em `AUTOPOSTS_BACKEND_URL`. Sem esse destino, o site abre em modo de configuração, com cadastro/cobrança bloqueados. O backend completo continua em `autoposts.main:app` no host CPU; banco e automação não foram transferidos para disco temporário.
+
 ## Duas edições, um único código
 
 | Edição | Comportamento |

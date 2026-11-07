@@ -4,6 +4,8 @@ Há duas edições do mesmo aplicativo: comercial por R$149,99/mês e demonstra�
 
 ## Ordem de configuração
 
+Se o site será publicado no Vercel, siga primeiro [a configuração da entrada e do backend](../docs/hospedagem/VERCEL.md). A interface usa uma entrada própria e depende do host CPU persistente para as funções do SaaS.
+
 1. Leia [hospedagem e R2](../docs/hospedagem/README.md). R2 armazena arquivos, não executa o backend/FFmpeg. É necessário um processo CPU sempre disponível para cumprir horários.
 2. Escolha [com assinatura](../edicoes/com-assinatura/README.md) ou [demonstração](../edicoes/demonstracao/README.md). Preserve .env, chave e volume de cada edição.
 3. Instale Python/FFmpeg e dependências com scripts/install.sh; execute scripts.configure_editions para preparar configurações e segredos locais, sem exibi-los.

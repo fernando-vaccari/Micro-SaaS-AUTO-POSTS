@@ -2,6 +2,7 @@
 .env.*
 !.env.example
 !.env.demo.example
+!.env.vercel.example
 .data/
 .venv/
 __pycache__/
@@ -22,3 +23,4 @@ artifacts/
 .data-demo/
 .venv-ai/
 .models/
+.vercel/

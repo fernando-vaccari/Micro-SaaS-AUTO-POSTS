@@ -1,2 +1,2 @@
 [tool.vercel]
-entrypoint = "autoposts.main:app"
+entrypoint = "autoposts.vercel:app"

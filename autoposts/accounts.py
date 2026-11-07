@@ -1,5 +1,7 @@
 """Profile, password recovery, email verification and durable account deletion."""
 import hashlib
+import hmac
+import ipaddress
 import os
 import secrets
 import smtplib
@@ -12,8 +14,18 @@ from pydantic import BaseModel,Field,field_validator
 from . import core
 router=APIRouter()
 
+def client_address(request):
+    peer=request.client.host if request.client else 'unknown'
+    secret=os.environ.get('AUTOPOSTS_GATEWAY_SECRET','')
+    supplied=request.headers.get('x-autoposts-gateway-token','')
+    if len(secret)>=32 and supplied and hmac.compare_digest(secret.encode(),supplied.encode()):
+        try:return str(ipaddress.ip_address(request.headers.get('x-autoposts-client-ip','')))
+        except ValueError:pass
+    return peer
+
+
 def rate_limit(request,kind,maximum,window,subject=''):
-    ip=request.client.host if request.client else 'unknown'
+    ip=client_address(request)
     key=hashlib.sha256((kind+':'+ip+':'+subject).encode()).hexdigest()
     stamp=time.time()
     with core.connect() as db:

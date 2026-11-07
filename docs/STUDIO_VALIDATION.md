@@ -1,5 +1,7 @@
 # AUTO POSTS Studio — relatório da entrega (7/11/2026)
 
+Atualização de hospedagem: a entrada Vercel foi separada do backend persistente. O conjunto atual possui **211 testes aprovados**; detalhes do ambiente somente de leitura, gateway e evidência no navegador em [VERCEL_VALIDATION](VERCEL_VALIDATION.md). O relatório abaixo conserva o histórico da entrega do estúdio.
+
 ## Implementado e testado
 
 - **177 testes automatizados aprovados**, incluindo os anteriores. Um aviso de depreciação Starlette/httpx sem falha funcional. Os contratos antigos Stripe continuam testados explicitamente; as novas contratações usam Studio/Mercado Pago.

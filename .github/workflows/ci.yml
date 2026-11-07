@@ -24,6 +24,7 @@ jobs:
         run: |
           node --check autoposts/static/app.js
           node --check autoposts/static/studio-ui.js
+          node --check autoposts/static/uploads.js
 
       - name: Generate real Auto Posts MP4
         run: python -m scripts.generate_demo
