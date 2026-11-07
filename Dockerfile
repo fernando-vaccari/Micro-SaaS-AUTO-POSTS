@@ -20,6 +20,7 @@ RUN --mount=type=secret,id=build_ca,target=/run/secrets/build_ca,required=false 
         python -m pip install --no-cache-dir --requirement requirements.txt; \
     fi
 COPY --chown=autoposts:autoposts autoposts ./autoposts
+COPY --chown=autoposts:autoposts scripts ./scripts
 RUN mkdir -p /app/.data && chown autoposts:autoposts /app/.data
 
 USER autoposts

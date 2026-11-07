@@ -14,13 +14,13 @@ Quando o cliente escolhe o modo IA, o contexto necessário da campanha é enviad
 
 ## Compartilhamento e localização
 
-Fornecedores previstos pelo aplicativo incluem hospedagem **[identificar fornecedor e região]**, Meta/Instagram, OpenAI no modo IA e Stripe quando habilitado. **[Informar operadores adicionais, transferências internacionais e salvaguardas aplicáveis.]**
+Fornecedores previstos pelo aplicativo incluem hospedagem **[identificar fornecedor e região]**, Backblaze B2 para mídia privada, Meta/Instagram, OpenAI no modo IA e Stripe quando habilitado. **[Informar operadores adicionais, transferências internacionais e salvaguardas aplicáveis.]**
 
 O serviço usa cookies para sessão e proteção contra requisições não autorizadas. **[Declarar outros cookies ou ferramentas analíticas somente se forem realmente implantados.]**
 
 ## Retenção e segurança
 
-**[Definir os prazos por categoria, fundamento da retenção e tratamento de backups.]** O código inicial não apaga automaticamente vídeos e uploads por prazo. O operador deve estabelecer e executar a política descrita nesta página.
+**[Definir os prazos por categoria, fundamento da retenção e tratamento de backups.]** A aplicação limpa mídia elegível após MEDIA_RETENTION_DAYS (padrão 10) de inatividade, preservando trabalhos pendentes e materiais em uso por campanhas ativas. Exclusões remotas só se concluem com confirmação do B2. Dados de campanhas e cobrança não são apagados por essa rotina; exclusão de conta segue fluxo separado. Um hash do e-mail pode permanecer para prevenção de repetição do teste Starter. O operador deve informar prazos de cobrança/backups e bases legais.
 
 As medidas previstas incluem controle de acesso por conta, senha protegida, sessões assinadas, proteção CSRF e criptografia dos tokens de integração. O operador é responsável pela configuração HTTPS, controle de acesso à hospedagem, atualizações, backups e resposta a incidentes.
 

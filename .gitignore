@@ -1,6 +1,7 @@
 .env
 .env.*
 !.env.example
+!.env.demo.example
 .data/
 .venv/
 __pycache__/
@@ -13,3 +14,11 @@ playwright-report/
 test-results/
 *.sqlite3
 *.sqlite3-*
+
+artifacts/
+.backups/
+.dev.vars
+
+.data-demo/
+.venv-ai/
+.models/

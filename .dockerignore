@@ -14,4 +14,11 @@ test-results
 playwright-report
 tests
 docs
-scripts
+
+artifacts
+.backups
+.dev.vars
+
+.models
+.venv-ai
+.data-demo

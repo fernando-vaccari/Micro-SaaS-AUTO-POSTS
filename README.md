@@ -1,81 +1,76 @@
-# AUTOPOSTS
+# AUTO POSTS Studio
 
-Micro-SaaS para transformar uma campanha em vídeos verticais e publicações no Instagram. O cliente configura o nicho, os assuntos, o estilo, os horários e a conta profissional. Ao ativar a campanha, autoriza a geração e a publicação sem aprovar cada vídeo.
+SaaS em português para transformar fotos do negócio e um prompt em imagens e Reels narrados, com campanhas e publicação oficial no Instagram. O estúdio foi redesenhado para desktop e celular, com login individual em `/login` e cadastro em `/cadastro`.
 
-O aplicativo contém painel em português, cadastro e login, campanhas, geração de roteiros com IA ou textos fornecidos pelo cliente, renderização real de MP4 com FFmpeg, fila persistente, integração Instagram Login e cobrança opcional com Stripe. A instalação não conecta contas, não efetua cobranças e não publica conteúdo.
+**Comece pela pasta [GUIA-DE-INSTALACAO](GUIA-DE-INSTALACAO/README.md).** Ela reúne os passos de hospedagem, R2, IA, Instagram e gateway. Nenhuma credencial real está no repositório.
 
-## Executar em desenvolvimento
+## Duas edições, um único código
 
-Requisitos: Linux, Python 3.12 ou superior, FFmpeg/ffprobe com encoder `libx264` e fontes DejaVu. Em Debian/Ubuntu, os pacotes de sistema são `ffmpeg`, `fonts-dejavu-core` e `tzdata`. `uv` é recomendado; o instalador também aceita `venv`/`pip`.
+| Edição | Comportamento |
+|---|---|
+| [Com assinatura](edicoes/com-assinatura/README.md) | Studio R$149,99/mês; Mercado Pago preparado; acesso de produção depende de pagamento aprovado. |
+| [Demonstração](edicoes/demonstracao/README.md) | Mesma interface, criação e publicação, sem exigir assinatura. Cobrança bloqueada no servidor; banco, volume e chave separados. |
 
-Use o checkout existente. Cada tarefa na nuvem já é isolada; não é necessário criar outro clone ou worktree.
+Ambas permitem publicação real após conectar Instagram profissional e autorizar a campanha. Não há publicação simulada apresentada como resultado real. O plano Studio tem 20 vídeos e 40 imagens por período, com preço e cotas configuráveis. Contratos Stripe antigos foram preservados; novos clientes veem o Studio.
+
+## Piloto automático
+
+1. A pessoa cria sua conta, conecta o Instagram profissional, envia fotos e escreve o prompt.
+2. Escolhe voz feminina (padrão recomendado), masculina ou gravação própria e autoriza o piloto.
+3. O sistema reserva a tarefa, prepara roteiro/legenda, monta as cenas, sintetiza narração, gera MP4, confirma upload e publica pelo cronograma.
+4. As próximas execuções seguem a campanha sem aprovação por post. É possível pausar, cancelar, mudar dias/horários e acompanhar erros/histórico.
+
+Narração padrão: **Kokoro 82M ONNX em CPU**, PT-BR, sem API paga, com exemplo feminino e masculino incluídos. Clonagem própria Chatterbox/Qwen3 e variação SD1.5 têm adaptadores opcionais, sujeitos a instalação/modelos/homologação. [Pesquisa e licenças](docs/ias-gratuitas/README.md).
+
+Os vídeos padrão são composições das fotos reais, com enquadramento, movimento, transições, texto e áudio. Não prometem vídeo generativo indistinguível da realidade nem sincronização labial.
+
+## Instalar e testar
+
+Python 3.12+, FFmpeg/libx264/ffprobe, DejaVu e tzdata:
 
 ```bash
-cd /workspace/Micro-SaaS-AUTO-POSTS
 ./scripts/install.sh
-cp -n .env.example .env
+.venv/bin/python -m scripts.configure_editions
 ./scripts/start.sh
 ```
 
-O servidor usa a porta 8000. Faça a verificação local, sem precisar publicar uma prévia:
+Para incluir narração CPU no Docker:
 
 ```bash
-curl --fail http://127.0.0.1:8000/health
+docker compose -f compose.yaml -f compose.ai.yaml up -d --build
+```
+
+Demo completa com processador CPU:
+
+```bash
+docker compose --env-file .env.demo -f compose.demo.yaml up -d --build
+```
+
+Não é necessário build Node: FastAPI serve a interface. Variáveis em .env.example e .env.demo.example. O instalador de edições preserva valores existentes e reutiliza uma chave local anterior, evitando invalidar os tokens cifrados.
+
+```bash
 .venv/bin/python -m pytest -q
+.venv/bin/python -m compileall -q autoposts ai_worker scripts tests
+node --check autoposts/static/app.js
+node --check autoposts/static/studio-ui.js
 ```
 
-O primeiro cadastro cria uma conta vazia, sem campanhas ou postagens fictícias. Em desenvolvimento, uma chave local é criada em `.data/.app-secret` quando `APP_SECRET` está vazio. Preserve essa chave e o diretório `.data` entre reinicializações.
+## Cloudflare R2 e retenção
 
-## Fluxo automático
+Bucket privado, credenciais S3 somente no servidor, URLs temporárias após autorização por cliente e upload confirmado por HEAD/SHA-256. O adaptador R2 usa região auto e exclusão compatível com R2, sem operações de versionamento B2. Arquivos legados B2 mantêm o provedor registrado.
 
-1. Cadastre a conta e crie uma campanha desativada.
-2. Escolha **textos fornecidos** para trabalhar sem serviço de IA, ou **IA** para gerar roteiros a partir do nicho e dos assuntos com sua chave `AI_API_KEY`.
-3. Gere uma prévia para conferir o vídeo. A prévia não é publicada, mesmo em uma campanha ativa.
-4. Configure uma URL HTTPS pública, o aplicativo Meta e conecte o Instagram profissional pelo próprio painel.
-5. Defina os horários e o fuso e ative a campanha. A partir dessa autorização, os novos vídeos seguem para publicação automaticamente.
+**Vídeos e imagens gerados expiram após 10 horas.** Publicações pendentes ficam protegidas até o envio/cancelamento. A limpeza remove cache e objeto remoto, com fila persistente para repetir falhas. Histórico, consumo e cobranças continuam no banco. Fotos/vozes necessárias a campanhas seguem política própria. Não são apagadas publicações já realizadas no Instagram.
 
-Pausar interrompe novos trabalhos da campanha e retira suas publicações que ainda aguardam na fila. Uma requisição de publicação que já chegou ao Instagram pode terminar mesmo após a pausa. Confira o estado das publicações no painel.
+[Configurar R2 e teste real](docs/hospedagem/R2.md). Ainda é necessário fornecer credenciais e confirmar `R2_ROUNDTRIP_OK` na sua conta.
 
-Os vídeos desta versão são apresentações verticais com texto, fundos e imagens opcionais, com faixa de áudio silenciosa para compatibilidade. O fluxo não inclui narração, pesquisa de fatos, filmagens geradas ou licenciamento de música. O uso de IA não substitui a responsabilidade do cliente pelo conteúdo e pelos direitos sobre materiais enviados.
+## Hospedar sem notebook ligado
 
-## Configuração
+O código inclui fila e agendadores persistentes no servidor, serviços Docker com reinício e Caddy para HTTPS. O notebook pode permanecer desligado. **R2 armazena mídia; não executa Python/FFmpeg/voz. Cloudflare Workers Free não executa este backend.** É necessário host CPU com disco persistente e serviço ativo. [Opções e limites](docs/hospedagem/README.md).
 
-As variáveis são lidas do processo ou do arquivo local `.env`; valores do processo têm prioridade. Nunca versione arquivos com credenciais.
+Código/modelos padrão são gratuitos, mas hospedagem gratuita não garante disponibilidade/capacidade ilimitadas. R2 tem franquias e excedentes; Mercado Pago cobra tarifas. Nenhuma infraestrutura paga foi provisionada e nenhuma cobrança real foi executada.
 
-| Variável | Uso |
-| --- | --- |
-| `APP_ENV` | `development` ou `production`. |
-| `APP_BASE_URL` | Origem pública do aplicativo. HTTPS público é obrigatório para publicar no Instagram e para produção. |
-| `APP_SECRET` | Segredo estável com pelo menos 32 caracteres; obrigatório em produção. Protege sessões e tokens armazenados. |
-| `DATA_DIR` | Dados persistentes: SQLite, uploads, vídeos e chave local de desenvolvimento. Padrão `.data`. |
-| `INSTAGRAM_APP_ID` | Identificador do aplicativo Meta com Instagram Login. |
-| `INSTAGRAM_APP_SECRET` | Segredo do aplicativo Meta. |
-| `INSTAGRAM_REDIRECT_URI` | Callback exato cadastrado na Meta: origem pública seguida de `/api/integrations/instagram/callback`. |
-| `INSTAGRAM_GRAPH_VERSION` | Versão da Graph API; padrão `v25.0`. |
-| `AI_API_KEY` | Chave da API OpenAI para campanhas no modo IA. Não é exigida no modo de textos fornecidos. |
-| `AI_MODEL` | Modelo de texto; padrão `gpt-4.1-mini`. Custos e disponibilidade dependem da conta do provedor. |
-| `STRIPE_SECRET_KEY` | Chave Stripe; opcional enquanto não houver cobrança. Comece em modo de teste. |
-| `STRIPE_WEBHOOK_SECRET` | Segredo de assinatura do webhook Stripe. |
-| `STRIPE_PRICE_ID` | Preço recorrente do plano Pro configurado na mesma conta Stripe. |
+## Situação da entrega
 
-O limite inicial é de 3 vídeos por mês no plano gratuito e 100 no Pro. A criação de prévias também utiliza a cota. A confirmação de pagamento depende do webhook verificado; o retorno do navegador após um checkout não concede o plano.
+Veja [STUDIO_VALIDATION](docs/STUDIO_VALIDATION.md): testes locais, evidências de voz real/MP4/navegador, arquivos modificados e integrações ainda aguardando configuração externa. Instagram, R2 e Mercado Pago devem ser homologados na conta do operador antes de vender.
 
-## Executar com Docker
-
-```bash
-cp -n .env.example .env
-# Edite .env com as configurações do ambiente.
-docker compose up --build -d
-docker compose ps
-docker compose logs --tail=100 app
-```
-
-O serviço fica vinculado ao loopback do host por padrão e usa um volume nomeado para os dados. Configure um proxy reverso com HTTPS para expor o aplicativo em produção. `AUTOPOSTS_BIND_IP` e `AUTOPOSTS_PORT` alteram o vínculo no host; mudar o vínculo não configura domínio, TLS ou firewall.
-
-O servidor e os agendadores rodam em uma única instância. Não use múltiplos workers, réplicas ou volumes locais independentes para a mesma fila.
-
-## Antes de oferecer o serviço a clientes
-
-Veja [operação e publicação](docs/OPERATIONS.md) para configurar Meta, Stripe, HTTPS, persistência, backup e recuperação. O projeto não cria recursos de hospedagem nem publica uma implantação automaticamente.
-
-Há cadastro e login com senha. Recuperação de senha, confirmação de e-mail e envio de mensagens transacionais ainda não fazem parte desta versão. Essas capacidades, termos de uso, política de privacidade e uma política de retenção precisam ser preparados antes de abrir um serviço público a clientes.
+A versão anterior permanece em `archive/pre-studio-20261107`; outras versões foram preservadas nas branches de arquivo existentes. Esta entrega continua FastAPI/SQLite e o frontend existente, com migrações aditivas e isolamento entre usuários.

@@ -1,0 +1,22 @@
+FROM python:3.12-slim
+ENV PYTHONUNBUFFERED=1 HF_HOME=/models TOKENIZERS_PARALLELISM=false
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libsndfile1 libgomp1 && rm -rf /var/lib/apt/lists/* && useradd --uid 10001 --create-home ai
+WORKDIR /app
+ARG AI_VOICE_ENGINE=kokoro
+ENV AI_VOICE_ENGINE=${AI_VOICE_ENGINE}
+COPY ai_worker/requirements*.txt /app/
+RUN if [ "$AI_VOICE_ENGINE" = "qwen3" ]; then cp requirements-qwen3.txt requirements.txt; elif [ "$AI_VOICE_ENGINE" = "kokoro" ]; then cp requirements-kokoro.lock.txt requirements.txt; fi
+RUN --mount=type=secret,id=build_ca,target=/run/secrets/build_ca,required=false \
+    if [ -f /run/secrets/build_ca ]; then export PIP_CERT=/run/secrets/build_ca; fi; \
+    if [ "$AI_VOICE_ENGINE" != "kokoro" ]; then python -m pip install --no-cache-dir torch==2.6.0+cpu torchaudio==2.6.0+cpu --index-url https://download.pytorch.org/whl/cpu; fi && \
+    python -m pip install --no-cache-dir -r requirements.txt
+COPY --chown=ai:ai ai_worker /app/ai_worker
+COPY --chown=ai:ai scripts/download_voice_models.py /app/scripts/download_voice_models.py
+RUN mkdir /models && chown ai:ai /models
+ENV KOKORO_MODEL_DIR=/models/kokoro
+RUN --mount=type=secret,id=build_ca,target=/run/secrets/build_ca,required=false \
+    if [ -f /run/secrets/build_ca ]; then export SSL_CERT_FILE=/run/secrets/build_ca; fi; \
+    if [ "$AI_VOICE_ENGINE" = "kokoro" ]; then python -m scripts.download_voice_models && chown -R ai:ai /models; fi
+USER ai
+EXPOSE 8005
+CMD ["python", "-m", "uvicorn", "ai_worker.app:app", "--host", "0.0.0.0", "--port", "8005", "--workers", "1", "--no-access-log"]

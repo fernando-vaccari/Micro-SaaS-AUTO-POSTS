@@ -21,8 +21,10 @@ jobs:
       - name: Validate application and rendering
         run: python -m pytest -q
       - name: Validate frontend syntax
-        run: node --check autoposts/static/app.js
-        
+        run: |
+          node --check autoposts/static/app.js
+          node --check autoposts/static/studio-ui.js
+
       - name: Generate real Auto Posts MP4
         run: python -m scripts.generate_demo
 
@@ -33,4 +35,4 @@ jobs:
           path: artifacts/autoposts-demo.mp4
           if-no-files-found: error
           retention-days: 7
-          
+
