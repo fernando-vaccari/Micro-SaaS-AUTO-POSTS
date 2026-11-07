@@ -139,6 +139,9 @@ def delete_account(data:DeleteInput,request:Request,response:Response,user=Depen
     rate_limit(request,'delete-account',5,3600,user['id'])
     if not data.confirmed or not core.password_matches(data.password,user['password_hash']):raise HTTPException(400,'Confirme a exclusão com sua senha atual.')
     if core.one("SELECT 1 FROM posts WHERE user_id=? AND status='publishing'",(user['id'],)) or core.one("SELECT 1 FROM media_jobs WHERE user_id=? AND status='processing' AND lease_until>?",(user['id'],core.now())):raise HTTPException(409,'Aguarde a tarefa em andamento antes de excluir sua conta.')
+    if user.get('mp_preapproval_id'):
+        from .mercadopago import cancel
+        cancel(user)
     if user.get('stripe_subscription_id'):
         from .integrations import _stripe_request,IntegrationError
         if not core.settings.stripe_secret_key:raise HTTPException(503,'É necessário cancelar sua assinatura antes de excluir a conta.')
@@ -164,4 +167,4 @@ def audit(user=Depends(core.current_user)):
 
 @router.get('/api/billing/history')
 def billing_history(user=Depends(core.current_user)):
-    return {'events':core.query('SELECT event_type,plan,status,amount,currency,created_at FROM billing_history WHERE user_id=? ORDER BY created_at DESC LIMIT 100',(user['id'],)),'pending_checkout':core.one('SELECT plan,checkout_url,expires_at FROM billing_checkouts WHERE user_id=? AND expires_at>?',(user['id'],core.now()))}
+    return {'events':core.query('SELECT event_type,plan,status,amount,currency,created_at FROM billing_history WHERE user_id=? ORDER BY created_at DESC LIMIT 100',(user['id'],)),'pending_checkout':core.one('SELECT plan,checkout_url,expires_at FROM billing_checkouts WHERE user_id=? AND expires_at>?',(user['id'],core.now())) or core.one("SELECT 'studio' AS plan,checkout_url,NULL AS expires_at FROM mp_checkouts WHERE user_id=?",(user['id'],))}

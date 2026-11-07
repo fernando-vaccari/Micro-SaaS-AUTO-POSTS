@@ -1,0 +1,34 @@
+# Optional CPU service: docker compose -f compose.yaml -f compose.ai.yaml up -d --build
+services:
+  app:
+    environment:
+      AI_MEDIA_URL: http://ai:8005
+      NO_PROXY: "${NO_PROXY:-},ai,localhost,127.0.0.1"
+      no_proxy: "${NO_PROXY:-},ai,localhost,127.0.0.1"
+      AI_MEDIA_TOKEN: ${AI_MEDIA_TOKEN:?Configure AI_MEDIA_TOKEN forte no .env}
+      AI_IMAGES_ENABLED: ${AI_IMAGES_ENABLED:-false}
+    depends_on:
+      - ai
+  ai:
+    build:
+      context: .
+      dockerfile: Dockerfile.ai
+      args:
+        AI_VOICE_ENGINE: ${AI_VOICE_ENGINE:-kokoro}
+    restart: unless-stopped
+    init: true
+    environment:
+      AI_MEDIA_TOKEN: ${AI_MEDIA_TOKEN:?Configure AI_MEDIA_TOKEN forte no .env}
+      AI_IMAGES_ENABLED: ${AI_IMAGES_ENABLED:-false}
+      AI_CPU_THREADS: 2
+      AI_VOICE_ENGINE: ${AI_VOICE_ENGINE:-kokoro}
+    volumes:
+      - ai-models:/models
+    mem_limit: 12g
+    cpus: 2
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+volumes:
+  ai-models:

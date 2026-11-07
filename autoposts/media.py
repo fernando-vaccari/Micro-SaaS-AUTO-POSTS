@@ -111,6 +111,24 @@ def _background(theme: dict, image_path: Path | None) -> Image.Image:
 
 
 def _scene_frame(post: dict, scene: dict, index: int, total: int, image_path: Path | None) -> Image.Image:
+    config=post.get('creative_config') or {}
+    if isinstance(config,str):config=json.loads(config)
+    if config.get('enabled') and image_path:
+        with Image.open(image_path) as original:
+            photo=ImageOps.exif_transpose(original).convert('RGB')
+            frame=ImageOps.fit(photo,(WIDTH,HEIGHT),Image.Resampling.LANCZOS).filter(ImageFilter.GaussianBlur(36))
+            foreground=ImageOps.contain(photo,(WIDTH,1600),Image.Resampling.LANCZOS)
+            frame.paste(foreground,((WIDTH-foreground.width)//2,(HEIGHT-foreground.height)//2))
+        brand=post.get('brand_config') or {}
+        if isinstance(brand,str):brand=json.loads(brand)
+        draw=ImageDraw.Draw(frame)
+        draw.rounded_rectangle((48,70,WIDTH-48,168),radius=22,fill=(12,21,25))
+        draw.text((80,94),str(brand.get('company_name') or post.get('title',''))[:45],font=_font(32,True),fill=(246,246,239))
+        text=str(scene.get('text',''))[:180]
+        font,lines,lh=_fit_text(text,WIDTH-160,260,26)
+        draw.rounded_rectangle((48,HEIGHT-420,WIDTH-48,HEIGHT-120),radius=24,fill=(12,21,25))
+        for i,line in enumerate(lines):draw.text((80,HEIGHT-390+i*lh),line,font=font,fill=(246,246,239))
+        return frame
     palette = dict(PALETTES[post.get("theme", "violet")])
     brand=post.get('brand_config') or {}
     if isinstance(brand,str):brand=json.loads(brand)
@@ -163,9 +181,9 @@ def _owned_image(post: dict, asset_id: str | None) -> Path | None:
     upload_dir = (core.settings.data_dir / "uploads").resolve()
     path = upload_dir / filename
     if not path.is_file() and asset.get('storage_key'):
-        from .storage import B2Store,StorageError
+        from .storage import get_store,StorageError
         try:
-            content=B2Store().get_bytes(asset['storage_key'],10*1024*1024)
+            content=get_store(asset.get('storage_provider','b2')).get_bytes(asset['storage_key'],10*1024*1024)
             with Image.open(__import__('io').BytesIO(content)) as image:image.verify()
             path.write_bytes(content)
         except Exception:raise RenderError('Não foi possível recuperar a imagem privada do B2.') from None
@@ -243,10 +261,10 @@ def render_post(post: dict) -> str:
         command = [
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
             "-f", "concat", "-safe", "1", "-i", str(playlist),
-            "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
+            *(["-i",str(post["_narration_path"])] if post.get("_narration_path") else ["-f","lavfi","-i","anullsrc=channel_layout=stereo:sample_rate=48000"]),
             "-map", "0:v:0", "-map", "1:a:0", "-vf", ",".join(filters),
-            "-c:v", "libx264", "-profile:v", "high", "-preset", "veryfast", "-crf", "23",
-            "-threads", "2", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k",
+            "-af", "apad,alimiter=limit=0.95", "-c:v", "libx264", "-profile:v", "high", "-preset", "veryfast", "-crf", "23",
+            "-threads", "2", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-ac", "2",
             "-t", str(duration), "-movflags", "+faststart", str(staging_output),
         ]
         try:
@@ -270,7 +288,7 @@ def render_image(post: dict) -> str:
     palette=dict(PALETTES.get(post.get('theme'),PALETTES['violet']))
     color=brand.get('primary_color','')
     if re.fullmatch(r'#[0-9a-fA-F]{6}',color):palette['accent']=tuple(bytes.fromhex(color[1:]))
-    source=_owned_image(post,scenes[0].get('asset_id')) if scenes else None
+    source=post.get('_generated_image') or (_owned_image(post,scenes[0].get('asset_id')) if scenes else None)
     frame=_background(palette,source).resize((1080,1350),Image.Resampling.LANCZOS)
     draw=ImageDraw.Draw(frame)
     draw.rounded_rectangle((70,90,150,102),radius=6,fill=palette['accent'])

@@ -3,7 +3,7 @@ import os
 from datetime import datetime,timezone
 from fastapi import HTTPException
 from . import core
-DEFAULTS={'starter':(2999,10,5),'pro':(6999,20,10),'business':(10999,50,25),'premium':(15999,80,40)}
+DEFAULTS={'studio':(14999,20,40),'starter':(2999,10,5),'pro':(6999,20,10),'business':(10999,50,25),'premium':(15999,80,40)}
 
 def catalog():
     result={}
@@ -15,15 +15,21 @@ def catalog():
         result[name]={'id':name,'name':name.title(),'price_cents':value('PRICE_CENTS',price),'currency':'BRL','videos':value('VIDEOS',videos),'images':value('IMAGES',images),'trial_days':7 if name=='starter' else 0,'stripe_price_id':(os.environ.get(f'STRIPE_PRICE_{name.upper()}') or (core.settings.stripe_price_id if name=='pro' else ''))}
     return result
 
-def public_catalog():return [{k:v for k,v in p.items() if k!='stripe_price_id'} for p in catalog().values()]
+def public_plan_ids():return [p.strip() for p in os.environ.get('PUBLIC_PLAN_IDS','studio').split(',') if p.strip()]
+
+def public_catalog():return [{k:v for k,v in p.items() if k!='stripe_price_id'} for name,p in catalog().items() if name in public_plan_ids()]
 
 def limit_for(user,kind):
+    from .edition import demo
+    if demo():return catalog()['studio']['videos' if kind=='video' else 'images']
     if user['plan']=='free':return core.FREE_POSTS if kind=='video' else 2
     plan=catalog().get(user['plan'])
     if not plan:raise HTTPException(403,'Escolha um plano válido.')
     return plan['videos' if kind=='video' else 'images']
 
 def require_entitlement(user):
+    from .edition import demo
+    if demo():return
     if not core.settings.production:return
     if user['plan']=='free' or user.get('subscription_status') not in {'active','trialing'}:
         raise HTTPException(403,'Escolha uma assinatura ativa para gerar ou publicar conteúdo.')

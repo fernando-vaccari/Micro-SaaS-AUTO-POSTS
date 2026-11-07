@@ -59,7 +59,7 @@ app = FastAPI(title='AUTOPOSTS', version='1.0.0', lifespan=lifespan,
 @app.middleware('http')
 async def browser_security(request: Request, call_next):
     if request.url.path.startswith('/api/') and request.method in {'POST', 'PUT', 'PATCH', 'DELETE'}:
-        body_limit = MAX_UPLOAD + 65536 if request.url.path == '/api/assets' else 1024 * 1024
+        body_limit = MAX_UPLOAD + 65536 if request.url.path in {'/api/assets','/api/voices'} else 1024 * 1024
         body = bytearray()
         async for chunk in request.stream():
             body.extend(chunk)
@@ -68,7 +68,7 @@ async def browser_security(request: Request, call_next):
         request._body = bytes(body)
     from .service_api import is_service_request
     service=is_service_request(request)
-    if request.url.path.startswith('/api/') and request.method in {'POST', 'PUT', 'PATCH', 'DELETE'} and request.url.path != '/api/billing/webhook' and not service:
+    if request.url.path.startswith('/api/') and request.method in {'POST', 'PUT', 'PATCH', 'DELETE'} and request.url.path not in {'/api/billing/webhook','/api/billing/mercadopago/webhook'} and not service:
         configured = urlsplit(settings.base_url)
         expected_origin = f'{configured.scheme}://{configured.netloc}'
         origin = request.headers.get('origin')
@@ -80,8 +80,8 @@ async def browser_security(request: Request, call_next):
     response.headers['X-Content-Type-Options'] = 'nosniff'
     response.headers['X-Frame-Options'] = 'DENY'
     response.headers['Referrer-Policy'] = 'same-origin'
-    response.headers['Permissions-Policy'] = 'camera=(), microphone=(), geolocation=()'
-    response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.backblazeb2.com; media-src 'self' blob: https://*.backblazeb2.com; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; object-src 'none'"
+    response.headers['Permissions-Policy'] = 'camera=(), microphone=(self), geolocation=()'
+    response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.backblazeb2.com https://*.r2.cloudflarestorage.com; media-src 'self' blob: https://*.backblazeb2.com https://*.r2.cloudflarestorage.com; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; object-src 'none'"
     if request.url.path.startswith('/api/') or request.url.path.startswith('/media/'):
         response.headers['Cache-Control'] = 'no-store'
     if settings.production:
@@ -145,7 +145,11 @@ class Branding(BaseModel):
     style: Literal['card','quote','tips'] = 'card'
 
 
+from .creative import CreativeOptions
+
+
 class PostInput(BaseModel):
+    creative_config: CreativeOptions = Field(default_factory=CreativeOptions)
     kind: Literal['video','image'] = 'video'
     brand_config: Branding = Field(default_factory=Branding)
     title: str = Field(min_length=1, max_length=120)
@@ -181,6 +185,8 @@ class ScheduleInput(BaseModel):
 
 
 def verify_assets(data: PostInput, user: dict) -> None:
+    from .creative import validate_owned
+    validate_owned(data.creative_config,user['id'],data.kind)
     if data.brand_config.logo_asset_id and not one('SELECT id FROM assets WHERE id=? AND user_id=? AND deleted_at IS NULL',(data.brand_config.logo_asset_id,user['id'])):
         raise HTTPException(400,'O logo deve pertencer à sua biblioteca.')
     for scene in data.scenes:
@@ -214,6 +220,7 @@ def session(request: Request, response: Response):
     return {'user': public_user(user) if user else None, 'csrf_token': csrf_token(request, response),
             'integrations': {'instagram': bool(settings.instagram_app_id and settings.instagram_app_secret and is_public_https(settings.base_url)),
                              'stripe': bool(_stripe_configured() and is_public_https(settings.base_url)),
+                             'mercadopago': bool(os.environ.get('MP_ACCESS_TOKEN') and os.environ.get('MP_WEBHOOK_SECRET')),
                              'ai': bool(os.environ.get('AI_API_KEY'))},
             'limits': {'free_posts': core.FREE_POSTS, 'pro_posts': 20},'retention_days':int(os.environ.get('MEDIA_RETENTION_DAYS','10'))}
 
@@ -260,7 +267,7 @@ def dashboard(user: User):
     groups = query('SELECT status, COUNT(*) AS count FROM posts WHERE user_id = ? GROUP BY status', (user['id'],))
     counts = {row['status']: row['count'] for row in groups}
     accounts = query('SELECT * FROM accounts WHERE user_id = ? ORDER BY created_at DESC', (user['id'],))
-    return {'stats': {'total': sum(counts.values()), 'scheduled': counts.get('scheduled', 0),
+    return {'user':public_user(user),'stats': {'total': sum(counts.values()), 'scheduled': counts.get('scheduled', 0),
                       'published': counts.get('published', 0), 'rendering': counts.get('rendering', 0), 'videos':sum(p.get('kind','video')=='video' for p in posts), 'images':sum(p.get('kind')=='image' for p in posts)},
             'posts': [public_post(post) for post in posts], 'accounts': [public_account(account) for account in accounts],
             'usage': usage(user)}
@@ -283,6 +290,7 @@ def create_post(data: PostInput, user: User):
         reserve(db,user['id'],data.kind)
         db.execute('INSERT INTO posts(id,user_id,title,caption,scenes,duration,theme,public_token,created_at,updated_at,kind,brand_config) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
                    (post_id,user['id'],data.title,data.caption,json.dumps([scene.model_dump() for scene in data.scenes]),data.duration,data.theme,secrets.token_urlsafe(32),timestamp,timestamp,data.kind,json.dumps(data.brand_config.model_dump())))
+        db.execute('UPDATE posts SET creative_config=? WHERE id=?',(data.creative_config.model_dump_json(),post_id))
     return {'post': public_post(owned_post(post_id, user))}
 
 
@@ -307,6 +315,7 @@ def edit_post(post_id: str, data: PostInput, user: User):
         db.execute("UPDATE posts SET title=?,caption=?,scenes=?,duration=?,theme=?,status='draft',output_path=NULL,public_token=?,last_error=NULL,container_id=NULL,media_id=NULL,scheduled_at=NULL,account_id=NULL,retry_count=0,next_attempt_at=NULL,storage_key=NULL,media_deleted_at=NULL,brand_config=?,updated_at=? WHERE id=?",
                    (data.title, data.caption, json.dumps([scene.model_dump() for scene in data.scenes]), data.duration, data.theme,
                     secrets.token_urlsafe(32), json.dumps(data.brand_config.model_dump()), now(), post_id))
+        db.execute('UPDATE posts SET creative_config=? WHERE id=?',(data.creative_config.model_dump_json(),post_id))
     if post['output_path']:
         try:
             safe_file('images' if post.get('kind')=='image' else 'videos', post['output_path']).unlink(missing_ok=True)
@@ -362,6 +371,8 @@ def render(post_id: str, request: Request, user: User):
 
 @app.post('/api/posts/{post_id}/schedule')
 def schedule(post_id: str, data: ScheduleInput, user: User):
+    from .edition import require_publishing
+    require_publishing()
     if not is_public_https(settings.base_url):
         raise HTTPException(503, 'Configure APP_BASE_URL com o endereço HTTPS público da aplicação antes de agendar. O Instagram precisa baixar o vídeo desse endereço.')
     current_time = datetime.now(timezone.utc)
@@ -407,8 +418,8 @@ def video(post_id: str, user: User):
     post=owned_post(post_id,user)
     if not post['output_path'] or post.get('media_deleted_at'):raise HTTPException(404,'Arquivo indisponível ou removido pela política de retenção.')
     if post.get('storage_key'):
-        from .storage import B2Store,StorageError
-        try:return RedirectResponse(B2Store().url(post['storage_key'],900,post.get('storage_version')),status_code=307)
+        from .storage import get_store,StorageError
+        try:return RedirectResponse(get_store(post.get('storage_provider','b2')).url(post['storage_key'],900,post.get('storage_version')),status_code=307)
         except StorageError as exc:raise HTTPException(503,str(exc)) from None
     kind=post.get('kind','video');directory='images' if kind=='image' else 'videos'
     return FileResponse(safe_file(directory,post['output_path']),media_type='image/jpeg' if kind=='image' else 'video/mp4',filename=post['output_path'],content_disposition_type='inline')
@@ -419,8 +430,8 @@ def public_video(public_token: str):
     post=one('SELECT * FROM posts WHERE public_token=? AND output_path IS NOT NULL AND media_deleted_at IS NULL',(public_token,))
     if not post:raise HTTPException(404,'Arquivo não encontrado.')
     if post.get('storage_key'):
-        from .storage import B2Store,StorageError
-        try:return RedirectResponse(B2Store().url(post['storage_key'],900,post.get('storage_version')),status_code=307)
+        from .storage import get_store,StorageError
+        try:return RedirectResponse(get_store(post.get('storage_provider','b2')).url(post['storage_key'],900,post.get('storage_version')),status_code=307)
         except StorageError as exc:raise HTTPException(503,str(exc)) from None
     return FileResponse(safe_file('images' if post.get('kind')=='image' else 'videos',post['output_path']),media_type='image/jpeg' if post.get('kind')=='image' else 'video/mp4')
 
@@ -430,6 +441,8 @@ class PublishInput(BaseModel):
 
 @app.post('/api/posts/{post_id}/publish')
 def publish_now(post_id:str,data:PublishInput,user:User):
+    from .edition import require_publishing
+    require_publishing()
     return schedule(post_id,ScheduleInput(account_id=data.account_id,scheduled_at=datetime.now(timezone.utc)+timedelta(seconds=1)),user)
 
 
@@ -490,20 +503,21 @@ async def upload_asset(user: User, file: UploadFile = File(...)):
     require_entitlement(user)
     try:
         path.write_bytes(payload)
-        if storage.backend()=='b2':
+        if storage.backend() in {'b2','r2'}:
             from starlette.concurrency import run_in_threadpool
-            remote=await run_in_threadpool(storage.B2Store().put_file,storage.object_key(user['id'],asset_id,'image'),path,'image/jpeg')
+            remote=await run_in_threadpool(storage.get_store().put_file,storage.object_key(user['id'],asset_id,'image'),path,'image/jpeg')
         with connect() as db:
             db.execute('BEGIN IMMEDIATE')
             totals=db.execute('SELECT COUNT(*) AS count,COALESCE(SUM(size),0) AS size FROM assets WHERE user_id=? AND deleted_at IS NULL',(user['id'],)).fetchone()
             if totals['count']>=100 or totals['size']+len(payload)>250*1024*1024:raise HTTPException(403,'Sua biblioteca atingiu o limite de armazenamento.')
             db.execute('INSERT INTO assets(id,user_id,filename,original_name,media_type,kind,size,created_at,storage_key,storage_version) VALUES(?,?,?,?,?,?,?,?,?,?)',
               (asset_id,user['id'],filename,original_name,'image/jpeg','image',len(payload),now(),remote.get('key') if remote else None,remote.get('version_id') if remote else None))
+            if remote:db.execute('UPDATE assets SET storage_provider=? WHERE id=?',(remote.get('provider') or storage.backend(),asset_id))
     except Exception as exc:
         path.unlink(missing_ok=True)
         if remote:
             from .maintenance import queue_delete
-            with connect() as db:queue_delete(db,{'user_id':user['id'],'storage_key':remote['key'],'storage_version':remote.get('version_id')},'upload_rejected')
+            with connect() as db:queue_delete(db,{'user_id':user['id'],'storage_key':remote['key'],'storage_version':remote.get('version_id'),'storage_provider':remote.get('provider') or storage.backend()},'upload_rejected')
         if isinstance(exc,storage.StorageError):raise HTTPException(503,str(exc)) from None
         raise
     return {'asset': asset_public(one('SELECT * FROM assets WHERE id = ?', (asset_id,)))}
@@ -515,8 +529,8 @@ def asset_file(asset_id: str, user: User):
     if not asset or asset.get('deleted_at'):
         raise HTTPException(404, 'Imagem não encontrada.')
     if asset.get('storage_key'):
-        from .storage import B2Store,StorageError
-        try:return RedirectResponse(B2Store().url(asset['storage_key'],900,asset.get('storage_version')),status_code=307)
+        from .storage import get_store,StorageError
+        try:return RedirectResponse(get_store(asset.get('storage_provider','b2')).url(asset['storage_key'],900,asset.get('storage_version')),status_code=307)
         except StorageError as exc:raise HTTPException(503,str(exc)) from None
     return FileResponse(safe_file('uploads', asset['filename']), media_type=asset['media_type'])
 
@@ -531,4 +545,16 @@ app.include_router(service_router)
 app.include_router(account_router)
 from .public_pages import router as public_router
 app.include_router(public_router)
+from .voices import router as voices_router
+from .studio import router as studio_router
+from .mercadopago import router as mp_router
+app.include_router(voices_router)
+app.include_router(studio_router)
+app.include_router(mp_router)
+
+@app.get('/login',include_in_schema=False)
+@app.get('/cadastro',include_in_schema=False)
+def access_page():
+    return FileResponse(Path(__file__).parent/'static'/'index.html')
+
 app.mount('/', StaticFiles(directory=Path(__file__).parent / 'static', html=True), name='frontend')

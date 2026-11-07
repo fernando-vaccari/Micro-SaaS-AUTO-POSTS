@@ -99,10 +99,12 @@ def _publish_one() -> bool:
         _fail(post["id"], "O Instagram excedeu o tempo de processamento. Confira sua conta antes de tentar novamente.", "publishing")
         return True
     try:
+        from .edition import require_publishing
+        require_publishing()
         video_url = f"{core.settings.base_url.rstrip('/')}/media/{post['public_token']}.{'jpg' if post.get('kind')=='image' else 'mp4'}"
         if post.get('storage_key'):
-            from .storage import B2Store
-            video_url=B2Store().url(post['storage_key'],3600,post.get('storage_version'))
+            from .storage import get_store
+            video_url=get_store(post.get('storage_provider','b2')).url(post['storage_key'],3600,post.get('storage_version'))
         from .plans import require_entitlement
         require_entitlement(core.one('SELECT * FROM users WHERE id=?',(post['user_id'],)))
         if post.get('kind')=='image':
@@ -193,7 +195,7 @@ def stop_worker() -> None:
         if _thread is not None:
             # FFmpeg itself has a timeout; retaining the lock until it exits avoids
             # a second process touching the same render during graceful shutdown.
-            _thread.join(timeout=600)
+            _thread.join(timeout=900)
             if _thread.is_alive():
                 raise RuntimeError("O worker não terminou a operação no prazo de encerramento.")
             _thread = None

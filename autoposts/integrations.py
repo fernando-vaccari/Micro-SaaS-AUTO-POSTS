@@ -316,11 +316,19 @@ def _require_stripe() -> None:
 
 @router.post("/api/billing/checkout")
 def billing_checkout(body:dict=Body(default={}),user:dict=Depends(core.current_user)):
-    from .plans import catalog
+    from .edition import require_billing
+    require_billing()
+    from .plans import catalog,public_plan_ids
+    from . import mercadopago
+    plan_id=body.get('plan','studio')
+    if plan_id not in public_plan_ids() and user['plan']!=plan_id:raise HTTPException(403,'Este plano não está disponível para novas assinaturas.')
+    if mercadopago.selected():
+        if plan_id!='studio':raise HTTPException(422,'O checkout Mercado Pago usa o plano Studio.')
+        return mercadopago.checkout(user)
     _require_stripe()
     if user.get('stripe_subscription_id') and user.get('subscription_status') in {'active','trialing'}:
         raise HTTPException(409,'Use o portal para alterar ou cancelar sua assinatura.')
-    selected=catalog().get(body.get('plan','pro'))
+    selected=catalog().get(body.get('plan','studio'))
     if not selected or not selected['stripe_price_id']:raise HTTPException(503,'Configure o Price ID Stripe do plano selecionado.')
     with core.connect() as db:
         db.execute('BEGIN IMMEDIATE')
@@ -370,6 +378,8 @@ def billing_checkout(body:dict=Body(default={}),user:dict=Depends(core.current_u
 
 @router.post("/api/billing/portal")
 def billing_portal(user: dict = Depends(core.current_user)):
+    from .edition import require_billing
+    require_billing()
     _require_stripe()
     if not user.get("stripe_customer_id"):
         raise HTTPException(409, "Sua conta ainda não possui uma assinatura para gerenciar.")
@@ -450,6 +460,8 @@ def _subscription_change(event: dict) -> dict | None:
 
 @router.post("/api/billing/webhook")
 async def billing_webhook(request: Request):
+    from .edition import require_billing
+    require_billing()
     if not _stripe_configured():
         raise HTTPException(503, "O webhook de cobrança não está configurado.")
     length = request.headers.get("content-length")
@@ -518,6 +530,10 @@ def check_permissions(account_id:str,user:dict=Depends(core.current_user)):
 
 @router.post('/api/billing/checkout/cancel')
 def cancel_checkout(user:dict=Depends(core.current_user)):
+    from .edition import require_billing
+    require_billing()
+    from . import mercadopago
+    if mercadopago.selected() and not core.one('SELECT 1 FROM billing_checkouts WHERE user_id=?',(user['id'],)):return mercadopago.cancel(user)
     pending=core.one('SELECT * FROM billing_checkouts WHERE user_id=?',(user['id'],))
     if not pending:return {'ok':True}
     if pending['checkout_id'] and pending['expires_at']>core.now():

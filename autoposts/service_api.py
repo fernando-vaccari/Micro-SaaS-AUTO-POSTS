@@ -38,7 +38,7 @@ def claim_job():
     ids.add(json.loads(post['brand_config'] or '{}').get('logo_asset_id'))
     for asset_id in ids:
         if asset_id:
-            a=core.one('SELECT id,user_id,filename,storage_key,size FROM assets WHERE id=? AND user_id=? AND deleted_at IS NULL',(asset_id,post['user_id']))
+            a=core.one('SELECT id,user_id,filename,storage_key,storage_provider,size FROM assets WHERE id=? AND user_id=? AND deleted_at IS NULL',(asset_id,post['user_id']))
             if not a or not a['storage_key']:
                 jobs.fail(job,'O processador remoto precisa de todas as imagens no B2.');raise HTTPException(409,'Envie as imagens ao B2 antes de usar o processador remoto.')
             assets.append(a)
@@ -60,13 +60,13 @@ def job_result(job_id:str,data:JobResult):
     post=core.one('SELECT * FROM posts WHERE id=?',(job['post_id'],))
     key=storage.object_key(post['user_id'],post['id']+'-'+post['public_token'][:12],post['kind'])
     try:
-        confirmed=storage.B2Store()._confirm(key,data.size,data.sha256)
+        confirmed=storage.get_store()._confirm(key,data.size,data.sha256)
         if data.size<=0 or not data.sha256 or confirmed.get('VersionId')!=data.version_id:
             raise storage.StorageError('A versão do objeto não foi confirmada.',code='verification',retryable=True)
     except storage.StorageError as exc:raise HTTPException(503,str(exc)) from None
     except Exception:raise HTTPException(503,'Não foi possível confirmar o upload no B2.') from None
     filename=post['id']+('.jpg' if post['kind']=='image' else '.mp4')
-    if not jobs.complete(job,filename,{'key':key,'size':data.size,'sha256':data.sha256,'version_id':data.version_id}):raise HTTPException(409,'Reserva expirada.')
+    if not jobs.complete(job,filename,{'provider':'r2' if storage.backend()=='r2' else 'b2','key':key,'size':data.size,'sha256':data.sha256,'version_id':data.version_id}):raise HTTPException(409,'Reserva expirada.')
     return {'ok':True,'status':'completed'}
 
 @router.get('/api/plans')
@@ -98,7 +98,8 @@ def delete_asset(asset_id:str,user=Depends(core.current_user)):
 
 @router.get('/api/public/config')
 def public_config():
-    return {'operator':os.environ.get('LEGAL_OPERATOR_NAME',''),'contact':os.environ.get('LEGAL_CONTACT_EMAIL',''),'legal_updated':os.environ.get('LEGAL_UPDATED_AT',''),'retention_days':max(1,int(os.environ.get('MEDIA_RETENTION_DAYS','10'))),'production':core.settings.production}
+    from .edition import demo,allow_publishing
+    return {'edition':'demo' if demo() else 'saas','publishing_enabled':allow_publishing(),'media_ttl_hours':max(1,int(os.environ.get('MEDIA_TTL_HOURS','10'))),'billing_provider':os.environ.get('BILLING_PROVIDER','mercadopago'),'operator':os.environ.get('LEGAL_OPERATOR_NAME',''),'contact':os.environ.get('LEGAL_CONTACT_EMAIL',''),'legal_updated':os.environ.get('LEGAL_UPDATED_AT',''),'retention_days':max(1,int(os.environ.get('MEDIA_RETENTION_DAYS','10'))),'production':core.settings.production}
 
 @router.get('/api/jobs/{job_id}')
 def job_detail(job_id:str,user=Depends(core.current_user)):

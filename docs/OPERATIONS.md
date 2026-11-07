@@ -1,5 +1,7 @@
 # Configuração, deploy e operação
 
+> Para a edição Studio atual com R2, Mercado Pago, Kokoro e demo, comece em [GUIA-DE-INSTALACAO](../GUIA-DE-INSTALACAO/README.md). A seção B2 abaixo documenta a integração legada; não é necessária para usar Cloudflare R2.
+
 ## Backblaze B2 — prioridade de configuração
 
 No painel Backblaze, abra Buckets e confirme o bucket **privado** `autoposts-media-fernando`, região `us-east-005`. Em Application Keys crie/consulte uma chave S3 para esse bucket, com permissões `listFiles`, `readFiles`, `writeFiles` e `deleteFiles`. O teste usa `diagnostics/`; a aplicação usa `users/`. Uma chave limitada a outro prefixo impedirá operações. Não use a master key, Account ID, nome da chave ou chave de outro bucket.

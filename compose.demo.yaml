@@ -1,0 +1,43 @@
+# A mesma imagem/código, com chave, banco e volume de demonstração separados.
+name: autoposts-demo
+services:
+  demo:
+    build: .
+    restart: unless-stopped
+    init: true
+    env_file: .env.demo
+    environment:
+      APP_EDITION: demo
+      APP_SECRET: ${DEMO_APP_SECRET:?Configure DEMO_APP_SECRET em .env.demo}
+      DEMO_DATA_DIR: /app/.data
+      AI_MEDIA_URL: http://ai:8005
+      NO_PROXY: "${NO_PROXY:-},ai,localhost,127.0.0.1"
+      no_proxy: "${NO_PROXY:-},ai,localhost,127.0.0.1"
+      AI_MEDIA_TOKEN: ${AI_MEDIA_TOKEN:?Execute scripts/configure_editions.py}
+    ports:
+      - "127.0.0.1:${AUTOPOSTS_PORT:-8001}:8000"
+    volumes:
+      - demo-data:/app/.data
+    depends_on:
+      - ai
+    stop_grace_period: 960s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+  ai:
+    build:
+      context: .
+      dockerfile: Dockerfile.ai
+    restart: unless-stopped
+    init: true
+    environment:
+      AI_MEDIA_TOKEN: ${AI_MEDIA_TOKEN:?Execute scripts/configure_editions.py}
+      AI_VOICE_ENGINE: kokoro
+      KOKORO_MODEL_DIR: /models/kokoro
+    volumes:
+      - demo-models:/models
+    mem_limit: 2g
+    cpus: 2
+volumes:
+  demo-data:
+  demo-models:

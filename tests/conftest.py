@@ -9,6 +9,8 @@ from autoposts import core
 
 @pytest.fixture
 def isolated_db(tmp_path, monkeypatch):
+    monkeypatch.setenv('APP_EDITION','saas')
+    monkeypatch.setenv('STORAGE_BACKEND','local')
     monkeypatch.setattr(core.settings, 'data_dir', tmp_path / 'data')
     monkeypatch.setattr(core.settings, 'base_url', 'http://127.0.0.1:8000')
     monkeypatch.setattr(core.settings, 'secure_cookies', False)

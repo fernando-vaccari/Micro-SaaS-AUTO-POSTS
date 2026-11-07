@@ -17,9 +17,11 @@ from autoposts import core, integrations
 
 @pytest.fixture
 def integration_app(tmp_path, monkeypatch):
+    monkeypatch.setenv("BILLING_PROVIDER","stripe")
+    monkeypatch.setenv("PUBLIC_PLAN_IDS","starter,pro,business,premium,studio")
     for name in ('STARTER','PRO','BUSINESS','PREMIUM'):
         monkeypatch.delenv('STRIPE_PRICE_'+name,raising=False)
-    configured = replace(core.settings, data_dir=tmp_path, base_url="https://app.example.com", secure_cookies=False,
+    configured = replace(core.settings, data_dir=tmp_path, base_url="https://app.example.com", secure_cookies=False, production=False,
                          app_secret="integration-test-secret-32-characters-minimum", instagram_app_id="12345",
                          instagram_app_secret="test-instagram-secret", instagram_redirect_uri="https://app.example.com/api/integrations/instagram/callback",
                          stripe_secret_key="sk_test_not_a_real_key", stripe_webhook_secret="whsec_test_only",
@@ -265,7 +267,7 @@ def test_checkout_redirect_does_not_grant_plan(integration_app, monkeypatch):
         assert b"subscription_data%5Bmetadata%5D%5Buser_id%5D=owner" in request.content
         return httpx.Response(200, json={"id":"cs_test_checkout1","url": "https://checkout.stripe.com/c/pay_test"})
     mock_provider(monkeypatch, provider)
-    assert client.post("/api/billing/checkout").json()["url"].startswith("https://checkout.stripe.com/")
+    assert client.post("/api/billing/checkout",json={"plan":"pro"}).json()["url"].startswith("https://checkout.stripe.com/")
     assert core.one("SELECT plan FROM users WHERE id='owner'")["plan"] == "free"
 
 
@@ -302,8 +304,8 @@ def test_checkout_is_deduplicated_and_can_be_cancelled(integration_app,monkeypat
         if request.url.path.endswith('/expire'):return httpx.Response(200,json={'id':'cs_test_pending','status':'expired'})
         return httpx.Response(200,json={'id':'cs_test_pending','url':'https://checkout.stripe.com/c/pending'})
     mock_provider(monkeypatch,provider)
-    assert client.post('/api/billing/checkout').status_code==200
-    assert client.post('/api/billing/checkout').status_code==200
+    assert client.post('/api/billing/checkout',json={'plan':'pro'}).status_code==200
+    assert client.post('/api/billing/checkout',json={'plan':'pro'}).status_code==200
     assert len(calls)==1
     assert client.post('/api/billing/checkout/cancel').status_code==200
     assert len(calls)==2 and core.one('SELECT 1 FROM billing_checkouts') is None
@@ -328,5 +330,5 @@ def test_starter_trial_requires_email_and_only_once(integration_app,monkeypatch)
 def test_production_rejects_price_amount_mismatch(integration_app,monkeypatch):
     client,_=integration_app;monkeypatch.setattr(core.settings,'production',True)
     mock_provider(monkeypatch,lambda request:httpx.Response(200,json={'id':'price_test_pro','currency':'brl','unit_amount':1,'recurring':{'interval':'month','interval_count':1},'active':True}))
-    assert client.post('/api/billing/checkout').status_code==503
+    assert client.post('/api/billing/checkout',json={'plan':'pro'}).status_code==503
     assert core.one('SELECT 1 FROM billing_checkouts') is None

@@ -19,7 +19,7 @@ def render_payload(job,output):
             core.execute('INSERT INTO users(id,email,name,password_hash,created_at) VALUES(?,?,?,?,?)',(owner,uuid4().hex+'@renderer.invalid','Remote renderer','not-a-login',core.now()))
             for asset in job.get('assets',[]):
                 if asset['user_id']!=owner or not asset.get('storage_key','').startswith(f'users/{owner}/images/') or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}',asset['id']):raise ValueError('Invalid asset ownership')
-                data=storage.B2Store().get_bytes(asset['storage_key'],10*1024*1024)
+                data=storage.get_store(asset.get('storage_provider','b2')).get_bytes(asset['storage_key'],10*1024*1024)
                 filename=asset['id']+'.jpg';path=Path(directory)/'uploads'/filename;path.write_bytes(data)
                 with Image.open(path) as image:image.verify()
                 core.execute('INSERT INTO assets(id,user_id,filename,original_name,media_type,kind,size,created_at) VALUES(?,?,?,?,?,?,?,?)',(asset['id'],owner,filename,filename,'image/jpeg','image',len(data),core.now()))

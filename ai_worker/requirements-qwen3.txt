@@ -1,0 +1,8 @@
+qwen-tts==0.1.1
+fastapi==0.156.3
+uvicorn==0.54.0
+python-multipart==0.0.32
+Pillow==12.3.0
+soundfile==0.13.1
+diffusers==0.35.2
+kokoro-onnx==0.6.1

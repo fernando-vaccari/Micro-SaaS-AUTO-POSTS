@@ -16,7 +16,7 @@ services:
     cap_drop:
       - ALL
     pids_limit: 256
-    stop_grace_period: 720s
+    stop_grace_period: 960s
 
   caddy:
     image: caddy:2

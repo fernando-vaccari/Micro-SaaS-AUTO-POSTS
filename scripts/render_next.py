@@ -6,7 +6,7 @@ import tempfile
 import urllib.request
 from urllib.parse import urlsplit
 from scripts.render_job import render_payload
-from autoposts.storage import B2Store,object_key
+from autoposts.storage import get_store,object_key
 
 def chamar_api(path,data=None):
     base=os.environ.get('AUTOPOSTS_API_URL','').rstrip('/')
@@ -27,7 +27,7 @@ def main():
             path=render_payload(job,directory)
             post=job['post'];kind=post.get('kind','video')
             key=object_key(job['user_id'],post['id']+'-'+post['public_token'][:12],kind)
-            result=B2Store().put_file(key,path,'image/jpeg' if kind=='image' else 'video/mp4')
+            result=get_store().put_file(key,path,'image/jpeg' if kind=='image' else 'video/mp4')
             chamar_api('/api/jobs/'+job['id']+'/result',{'lease_token':job['lease_token'],'status':'completed','size':result['size'],'sha256':result['sha256'],'version_id':result.get('version_id')})
         print('Trabalho concluído: upload verificado e confirmação aceita pelo servidor.')
     except Exception:

@@ -18,3 +18,7 @@ docs
 artifacts
 .backups
 .dev.vars
+
+.models
+.venv-ai
+.data-demo

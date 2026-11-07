@@ -60,8 +60,9 @@ def test_job_claims_are_exclusive_and_stale_leases_cannot_complete(client):
 
 def test_plans_and_separate_media_quotas(client,monkeypatch):
     catalog=client.get('/api/plans').json()['plans']
-    assert [(p['id'],p['price_cents'],p['videos'],p['images']) for p in catalog]==[('starter',2999,10,5),('pro',6999,20,10),('business',10999,50,25),('premium',15999,80,40)]
+    assert [(p['id'],p['price_cents'],p['videos'],p['images']) for p in catalog]==[('studio',14999,20,40)]
     assert all('stripe_price_id' not in p for p in catalog)
+    assert plans.catalog()['pro']['price_cents']==6999  # Preserve existing subscriptions.
     create(client,'image');create(client,'image')
     assert client.post('/api/posts',json=payload()).status_code==403
     assert client.post('/api/posts',json=payload('video')).status_code==201

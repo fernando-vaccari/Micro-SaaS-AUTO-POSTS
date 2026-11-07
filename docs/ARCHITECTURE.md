@@ -1,5 +1,7 @@
 # Arquitetura e auditoria da entrega
 
+> Este documento registra a base anterior. A extensão Studio (R2, CPU, Mercado Pago e duas edições) está descrita em [STUDIO_VALIDATION.md](STUDIO_VALIDATION.md) e no guia principal.
+
 ## Base preservada
 
 A base `0a457db` continha FastAPI, interface JavaScript, autenticação, SQLite, renderização FFmpeg, campanhas, OAuth Instagram, Stripe Pro e testes. Os scripts B2 e de render remoto haviam sido adicionados ao main. Foram mantidos os fluxos existentes, acrescidos de migrações aditivas. Não se apagou a versão anterior nem se substituiu o frontend por uma segunda aplicação.

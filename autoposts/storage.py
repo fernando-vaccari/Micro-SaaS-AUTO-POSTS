@@ -102,21 +102,21 @@ class B2Config:
 def configured():
     return all(os.environ.get(n, '').strip() for n in ('B2_ENDPOINT','B2_BUCKET_NAME','B2_KEY_ID','B2_APPLICATION_KEY'))
 
-def _failure(exc):
+def _failure(exc,provider="B2"):
     if isinstance(exc, ClientError):
         code = str(exc.response.get('Error', {}).get('Code', 'provider_error'))
         # Do not propagate message, request URL, authorization headers or key IDs.
         if code in {'InvalidAccessKeyId', 'MalformedAccessKeyId'}:
-            return StorageError('O endpoint S3 do B2 não reconheceu o Key ID enviado. Consulte o diagnóstico de recebimento, o endpoint/região e o escopo dos Secrets no GitHub; formato válido não confirma a validade da chave no provedor.', code=code)
+            return StorageError(f'O endpoint S3 do {provider} não reconheceu o Key ID enviado. Consulte o diagnóstico de recebimento, o endpoint/região e o escopo dos Secrets no GitHub; formato válido não confirma a validade da chave no provedor.', code=code)
         if code in {'SignatureDoesNotMatch', 'InvalidToken'}:
-            return StorageError('A assinatura foi recusada. Verifique o par keyID/applicationKey e a região do bucket.', code=code)
+            return StorageError('A assinatura foi recusada. Verifique o par de credenciais S3 e a região do bucket.', code=code)
         if code in {'AccessDenied', 'Unauthorized'}:
-            return StorageError('A chave não permite esta operação. Verifique bucket, prefixo e permissões listFiles, readFiles, writeFiles e deleteFiles.', code=code)
+            return StorageError('A chave não permite esta operação. Verifique bucket, prefixo e permissões de leitura, escrita, listagem e exclusão de objetos.', code=code)
         if code in {'NoSuchBucket','NotFound','404'}:
-            return StorageError('Bucket ou objeto não encontrado no B2. Verifique bucket e região.', code=code)
+            return StorageError('Bucket ou objeto não encontrado no armazenamento S3. Verifique bucket e região.', code=code)
         retry = code in {'RequestTimeout','SlowDown','InternalError','ServiceUnavailable','503','500'}
-        return StorageError('O B2 não concluiu a operação. Consulte o código seguro e tente novamente se a falha for temporária.', code=code, retryable=retry)
-    return StorageError('Falha de conexão, protocolo ou TLS com o B2. Verifique endpoint, proxy e CA confiável; a verificação TLS permanece ativa.', code=type(exc).__name__, retryable=True)
+        return StorageError(f'O {provider} não concluiu a operação. Consulte o código seguro e tente novamente se a falha for temporária.', code=code, retryable=retry)
+    return StorageError(f'Falha de conexão, protocolo ou TLS com o {provider}. Verifique endpoint, proxy e CA confiável; a verificação TLS permanece ativa.', code=type(exc).__name__, retryable=True)
 
 def create_client(cfg: B2Config):
     client = boto3.client('s3', endpoint_url=cfg.endpoint, region_name=cfg.region,
@@ -136,6 +136,7 @@ def object_key(user_id: str, media_id: str, kind: str):
     return f"users/{user_id}/{'videos' if kind=='video' else 'images'}/{media_id}.{'mp4' if kind=='video' else 'jpg'}"
 
 class B2Store:
+    provider='b2'
     def __init__(self, config=None, client=None):
         self.config = config or B2Config.from_env()
         self.client = client or create_client(self.config)
@@ -147,8 +148,8 @@ class B2Store:
                 ContentLength=len(data), ContentType=content_type,
                 ContentMD5=base64.b64encode(hashlib.md5(data).digest()).decode(), Metadata={'sha256':digest})
             self._confirm(key,len(data),digest)
-        except (BotoCoreError, ClientError) as exc: raise _failure(exc) from None
-        return {'key':key,'size':len(data),'sha256':digest,'version_id':response.get('VersionId') if isinstance(response.get('VersionId'),str) else None}
+        except (BotoCoreError, ClientError) as exc: raise _failure(exc,self.provider.upper()) from None
+        return {'provider':self.provider,'key':key,'size':len(data),'sha256':digest,'version_id':response.get('VersionId') if isinstance(response.get('VersionId'),str) else None}
 
     def put_file(self, key, path: Path, content_type):
         digest=hashlib.sha256(); md5=hashlib.md5()
@@ -160,8 +161,8 @@ class B2Store:
                 response=self.client.put_object(Bucket=self.config.bucket, Key=key, Body=stream, ContentLength=size,
                     ContentType=content_type,ContentMD5=base64.b64encode(md5.digest()).decode(),Metadata={'sha256':digest.hexdigest()})
             self._confirm(key,size,digest.hexdigest())
-        except (BotoCoreError,ClientError) as exc: raise _failure(exc) from None
-        return {'key':key,'size':size,'sha256':digest.hexdigest(),'version_id':response.get('VersionId') if isinstance(response.get('VersionId'),str) else None}
+        except (BotoCoreError,ClientError) as exc: raise _failure(exc,self.provider.upper()) from None
+        return {'provider':self.provider,'key':key,'size':size,'sha256':digest.hexdigest(),'version_id':response.get('VersionId') if isinstance(response.get('VersionId'),str) else None}
 
     def _confirm(self,key,size,digest):
         result=self.client.head_object(Bucket=self.config.bucket,Key=key)
@@ -176,7 +177,7 @@ class B2Store:
                 data=body.read(maximum+1)
             if len(data)>maximum: raise StorageError('Arquivo excede o limite.',code='size')
             return data
-        except (BotoCoreError,ClientError) as exc: raise _failure(exc) from None
+        except (BotoCoreError,ClientError) as exc: raise _failure(exc,self.provider.upper()) from None
 
     def delete(self,key,version_id=None):
         """Purge exact-key versions, not merely create a versioned delete marker."""
@@ -195,13 +196,60 @@ class B2Store:
                 if str(exc.response.get('Error',{}).get('Code')) in {'NoSuchKey','NotFound','404'}:return
                 raise
             raise StorageError('A exclusão ainda não foi confirmada pelo B2.',code='verification',retryable=True)
-        except (BotoCoreError,ClientError) as exc:raise _failure(exc) from None
+        except (BotoCoreError,ClientError) as exc:raise _failure(exc,self.provider.upper()) from None
 
     def url(self,key,seconds=900,version_id=None):
         try:return self.client.generate_presigned_url('get_object',Params={'Bucket':self.config.bucket,'Key':key,**({'VersionId':version_id} if version_id else {})},ExpiresIn=max(60,min(int(seconds),3600)))
-        except (BotoCoreError,ClientError) as exc:raise _failure(exc) from None
+        except (BotoCoreError,ClientError) as exc:raise _failure(exc,self.provider.upper()) from None
 
 def backend():
     selected=os.environ.get('STORAGE_BACKEND','b2' if os.environ.get('APP_ENV')=='production' else 'local')
-    if selected not in {'local','b2'}:raise StorageError('STORAGE_BACKEND deve ser local ou b2.',code='configuration')
+    if selected not in {'local','b2','r2'}:raise StorageError('STORAGE_BACKEND deve ser local, r2 ou b2.',code='configuration')
     return selected
+
+
+@dataclass(frozen=True, repr=False)
+class R2Config(B2Config):
+    @classmethod
+    def from_env(cls):
+        account=os.environ.get('R2_ACCOUNT_ID','').strip()
+        endpoint=os.environ.get('R2_ENDPOINT','').strip() or (f'https://{account}.r2.cloudflarestorage.com' if account else '')
+        bucket=os.environ.get('R2_BUCKET_NAME','').strip()
+        key_id=os.environ.get('R2_ACCESS_KEY_ID','');key=os.environ.get('R2_SECRET_ACCESS_KEY','')
+        if not all((endpoint,bucket,key_id,key)):raise StorageError('Configure R2_ACCOUNT_ID (ou R2_ENDPOINT), R2_BUCKET_NAME, R2_ACCESS_KEY_ID e R2_SECRET_ACCESS_KEY.',code='configuration')
+        for name,value in [('R2_ACCESS_KEY_ID',key_id),('R2_SECRET_ACCESS_KEY',key)]:
+            if not value.isascii() or any(c.isspace() or unicodedata.category(c).startswith('C') for c in value) or value[0] in '\"\'' or value[-1] in '\"\'' or value.startswith(name+'='):
+                raise StorageError(f'{name} deve conter somente o valor, sem aspas, rótulo, espaços ou caracteres invisíveis.',code='configuration')
+        try:
+            parsed=urlsplit(endpoint if '://' in endpoint else 'https://'+endpoint)
+            host=parsed.hostname or ''
+            valid=(parsed.scheme=='https' and re.fullmatch(r'[a-f0-9]{32}(?:\.(?:eu|fedramp))?\.r2\.cloudflarestorage\.com',host)
+                and not parsed.username and not parsed.password and parsed.path in ('','/') and not parsed.query and not parsed.fragment and parsed.port in (None,443))
+            if account and (not re.fullmatch('[a-f0-9]{32}',account) or host.split('.')[0]!=account):valid=False
+            if not valid:raise ValueError('endpoint')
+        except ValueError:raise StorageError('Use o endpoint S3 HTTPS da sua conta Cloudflare R2, sem bucket ou credenciais na URL.',code='configuration') from None
+        if not re.fullmatch(r'[a-z0-9][a-z0-9-]{1,61}[a-z0-9]',bucket):raise StorageError('R2_BUCKET_NAME inválido.',code='configuration')
+        return cls('https://'+host,'auto',bucket,key_id,key)
+
+
+class R2Store(B2Store):
+    provider='r2'
+    def __init__(self,config=None,client=None):super().__init__(config or R2Config.from_env(),client)
+
+    def delete(self,key,version_id=None):
+        # R2 does not implement S3 bucket versioning/list_object_versions.
+        try:
+            self.client.delete_object(Bucket=self.config.bucket,Key=key)
+            try:self.client.head_object(Bucket=self.config.bucket,Key=key)
+            except ClientError as exc:
+                if str(exc.response.get('Error',{}).get('Code')) in {'NoSuchKey','NotFound','404'}:return
+                raise
+            raise StorageError('A exclusão ainda não foi confirmada pelo R2.',code='verification',retryable=True)
+        except (BotoCoreError,ClientError) as exc:raise _failure(exc,'R2') from None
+
+
+def get_store(provider=None):
+    provider=provider or backend()
+    if provider=='r2':return R2Store()
+    if provider in {'b2','local'}:return B2Store()
+    raise StorageError('Provedor de armazenamento inválido.',code='configuration')

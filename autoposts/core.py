@@ -72,12 +72,14 @@ class Settings:
 
 def load_settings() -> Settings:
     data_dir = Path(os.environ.get('DATA_DIR', str(ROOT / '.data'))).expanduser().resolve()
+    if os.environ.get('APP_EDITION')=='demo':
+        data_dir=Path(os.environ.get('DEMO_DATA_DIR',str(ROOT/'.data-demo'))).expanduser().resolve()
     production = os.environ.get('APP_ENV', 'development').lower() == 'production'
     base_url = os.environ.get('APP_BASE_URL', 'http://127.0.0.1:8000').rstrip('/')
     app_secret = os.environ.get('APP_SECRET', '')
     if production:
-        if os.environ.get('STORAGE_BACKEND','b2')!='b2':
-            raise RuntimeError('Em produção, configure STORAGE_BACKEND=b2 para armazenar mídia privada com confirmação de upload.')
+        if os.environ.get('STORAGE_BACKEND','b2') not in {'b2','r2'}:
+            raise RuntimeError('Em produção, configure STORAGE_BACKEND=r2 ou b2 para armazenar mídia privada com confirmação de upload.')
         if len(app_secret) < 32:
             raise RuntimeError('APP_SECRET deve ter pelo menos 32 caracteres no modo production.')
         if not is_public_https(base_url):
@@ -205,7 +207,7 @@ def decrypt_secret(value: str) -> str:
 
 
 def public_user(user: dict) -> dict:
-    return {key: user.get(key) for key in ['id', 'email', 'name', 'plan', 'created_at','email_verified','subscription_status','subscription_until']}
+    return {key: user.get(key) for key in ['id', 'email', 'name', 'plan', 'created_at','email_verified','subscription_status','subscription_until','billing_provider','mp_status']}
 
 
 def optional_user(request: Request) -> dict | None:
@@ -322,13 +324,14 @@ def safe_file(directory: str, filename: str) -> Path:
 def public_post(post: dict) -> dict:
     import json
     keys = ['id', 'title', 'caption', 'duration', 'theme', 'status', 'scheduled_at', 'account_id',
-            'kind', 'render_count', 'media_deleted_at', 'brand_config', 'media_id', 'last_error', 'retry_count', 'created_at', 'updated_at']
+            'kind', 'generated_at', 'media_expires_at', 'creative_config', 'render_count', 'media_deleted_at', 'brand_config', 'media_id', 'last_error', 'retry_count', 'created_at', 'updated_at']
     result = {key: post.get(key) for key in keys}
     result['scenes'] = json.loads(post['scenes'])
     result['generation_status']=None
     if post['status']=='draft' and one("SELECT 1 FROM sqlite_master WHERE type='table' AND name='automation_runs'"):
         row=one("SELECT status FROM automation_runs WHERE post_id=? AND status IN ('queued','generating')",(post['id'],))
         result['generation_status']=row['status'] if row else None
+    result['creative_config'] = json.loads(post.get('creative_config') or '{}')
     result['brand_config'] = json.loads(post.get('brand_config') or '{}')
     result['video_url'] = f"/api/posts/{post['id']}/video" if post['output_path'] and ((settings.data_dir / ('images' if post.get('kind')=='image' else 'videos') / post['output_path']).is_file() or post.get('storage_key')) else None
     return result

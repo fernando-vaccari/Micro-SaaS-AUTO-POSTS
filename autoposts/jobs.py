@@ -1,6 +1,7 @@
 """Persistent media outbox with atomic claims, fenced leases and bounded retries."""
 import json
 import secrets
+import os
 from datetime import datetime,timedelta,timezone
 from pathlib import Path
 from . import core,storage
@@ -42,6 +43,8 @@ def complete(job,filename,result=None):
         db.execute('BEGIN IMMEDIATE')
         updated=db.execute("UPDATE media_jobs SET status='completed',result_key=?,last_error=NULL,lease_token=NULL,lease_until=NULL,updated_at=? WHERE id=? AND status='processing' AND lease_token=? AND lease_until>?",(result.get('key'),stamp,job['id'],job['lease_token'],stamp))
         if not updated.rowcount:return False
+        expiry=(datetime.fromisoformat(stamp)+timedelta(hours=max(1,int(os.environ.get('MEDIA_TTL_HOURS','10'))))).isoformat()
+        db.execute('UPDATE posts SET generated_at=?,media_expires_at=?,storage_provider=? WHERE id=?',(stamp,expiry,result.get('provider') or ('r2' if storage.backend()=='r2' else 'b2'),job['post_id']))
         db.execute("UPDATE posts SET status='ready',render_count=MAX(render_count,1),output_path=?,storage_key=?,storage_version=?,storage_size=?,storage_sha256=?,last_error=NULL,media_deleted_at=NULL,updated_at=? WHERE id=? AND status='rendering'",(filename,result.get('key'),result.get('version_id'),result.get('size'),result.get('sha256'),stamp,job['post_id']))
     return True
 
@@ -65,14 +68,24 @@ def execute_job(job,render_function=None):
         if cached and Path(cached).name==cached and (core.settings.data_dir/directory/cached).is_file():filename=cached
         else:
             renderer=render_function or (media.render_image if kind=='image' else media.render_post)
-            filename=renderer(post)
+            from .creative import render as render_creative
+            filename=render_creative(post,renderer)
+            if kind=='video' and json.loads(post.get('creative_config') or '{}').get('enabled'):
+                import subprocess, math
+                probe=subprocess.run(['ffprobe','-v','error','-show_entries','format=duration','-of','csv=p=0',str(core.settings.data_dir/directory/filename)],capture_output=True,text=True,timeout=10,check=True)
+                core.execute('UPDATE posts SET duration=? WHERE id=?',(min(60,math.ceil(float(probe.stdout.strip()))),post['id']))
             core.execute("UPDATE media_jobs SET local_filename=? WHERE id=? AND lease_token=?",(filename,job['id'],job['lease_token']))
         result=None
-        if storage.backend()=='b2':
-            result=storage.B2Store().put_file(storage.object_key(post['user_id'],post['id']+'-'+post['public_token'][:12],kind),core.settings.data_dir/directory/filename,'image/jpeg' if kind=='image' else 'video/mp4')
+        if storage.backend() in {'b2','r2'}:
+            result=storage.get_store().put_file(storage.object_key(post['user_id'],post['id']+'-'+post['public_token'][:12],kind),core.settings.data_dir/directory/filename,'image/jpeg' if kind=='image' else 'video/mp4')
         return complete(job,filename,result)
-    except storage.StorageError as exc:fail(job,str(exc),exc.retryable)
-    except media.RenderError as exc:fail(job,str(exc))
+    except storage.StorageError as exc:
+        fail(job,str(exc),exc.retryable)
+        if (not exc.retryable or job['attempts']>=job['max_attempts']) and storage.backend() in {'b2','r2'}:
+            from .maintenance import queue_delete
+            with core.connect() as db:
+                queue_delete(db,{'user_id':post['user_id'],'storage_provider':storage.backend(),'storage_key':storage.object_key(post['user_id'],post['id']+'-'+post['public_token'][:12],kind)},'failed_upload')
+    except media.RenderError as exc:fail(job,str(exc),getattr(exc,'retryable',False))
     except Exception:fail(job,'Falha ao gerar ou armazenar o arquivo. O resultado não foi marcado como concluído.')
 
 def public_job(row):

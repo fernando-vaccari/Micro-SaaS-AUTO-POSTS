@@ -42,6 +42,7 @@ class CampaignInput(BaseModel):
     company_name: str=Field(default='',max_length=80)
     objective: str=Field(default='',max_length=200)
     brand_config: dict=Field(default_factory=dict)
+    creative_config: dict=Field(default_factory=dict)
 
     @field_validator('weekdays')
     @classmethod
@@ -182,6 +183,7 @@ def public_campaign(campaign: dict) -> dict:
     result['times'] = json.loads(result['times'])
     result['enabled'] = bool(result['enabled'])
     result['weekdays']=json.loads(result.get('weekdays') or '[0,1,2,3,4,5,6]')
+    result['creative_config']=json.loads(result.get('creative_config') or '{}')
     result['brand_config']=json.loads(result.get('brand_config') or '{}')
     result.pop('generation_index', None)
     result.pop('user_id', None)
@@ -204,6 +206,12 @@ def owned_campaign(campaign_id: str, user: dict) -> dict:
 
 
 def validate_input(data: CampaignInput, user: dict) -> None:
+    from .creative import CreativeOptions,validate_owned
+    from pydantic import ValidationError
+    try:creative=CreativeOptions.model_validate(data.creative_config)
+    except ValidationError:raise HTTPException(422,'Configuração de fotos e voz inválida.') from None
+    validate_owned(creative,user['id'],data.kind)
+    data.creative_config=creative.model_dump()
     from .main import Branding
     from pydantic import ValidationError
     try:brand=Branding.model_validate(data.brand_config)
@@ -214,6 +222,9 @@ def validate_input(data: CampaignInput, user: dict) -> None:
         raise HTTPException(422, 'Preencha o nome e o nicho da automação.')
     if data.mode == 'templates' and not data.topics:
         raise HTTPException(422, 'No modo pautas, adicione pelo menos um texto autoral para os vídeos.')
+    if data.enabled:
+        from .edition import require_publishing
+        require_publishing()
     if data.account_id and not core.one('SELECT id FROM accounts WHERE id = ? AND user_id = ?', (data.account_id, user['id'])):
         raise HTTPException(404, 'Conta do Instagram não encontrada.')
     if data.enabled:
@@ -270,6 +281,7 @@ def create_campaign(data: CampaignInput, user: dict = Depends(core.current_user)
             next_occurrence(data.times, data.timezone,weekdays=data.weekdays) if data.enabled else None, stamp, stamp,
         ))
         db.execute('UPDATE campaigns SET kind=?,duration=?,weekdays=?,company_name=?,objective=?,brand_config=? WHERE id=?',(data.kind,data.duration,json.dumps(data.weekdays),data.company_name,data.objective,json.dumps(data.brand_config),campaign_id))
+        db.execute('UPDATE campaigns SET creative_config=? WHERE id=?',(json.dumps(data.creative_config),campaign_id))
     return {'campaign': public_campaign(owned_campaign(campaign_id, user))}
 
 
@@ -309,6 +321,7 @@ def update_campaign(campaign_id: str, data: CampaignInput, user: dict = Depends(
             stamp, campaign_id, user['id'],
         ))
         db.execute('UPDATE campaigns SET kind=?,duration=?,weekdays=?,company_name=?,objective=?,brand_config=? WHERE id=?',(data.kind,data.duration,json.dumps(data.weekdays),data.company_name,data.objective,json.dumps(data.brand_config),campaign_id))
+        db.execute('UPDATE campaigns SET creative_config=? WHERE id=?',(json.dumps(data.creative_config),campaign_id))
     return {'campaign': public_campaign(owned_campaign(campaign_id, user))}
 
 
@@ -368,7 +381,7 @@ def enqueue(campaign_id: str, *, preview: bool, scheduled_for: str | None = None
         brand=json.loads(campaign.get('brand_config') or '{}')
         brand['company_name']=campaign.get('company_name') or brand.get('company_name','')
         brand['cta']=campaign['cta'] or brand.get('cta','')
-        db.execute('UPDATE posts SET kind=?,duration=?,brand_config=? WHERE id=?',(campaign.get('kind','video'),campaign.get('duration',45),json.dumps(brand),post_id))
+        db.execute('UPDATE posts SET kind=?,duration=?,brand_config=?,creative_config=? WHERE id=?',(campaign.get('kind','video'),campaign.get('duration',45),json.dumps(brand),campaign.get('creative_config') or '{}',post_id))
         db.execute('UPDATE campaigns SET generation_index = generation_index + 1, last_error = NULL, updated_at = ? WHERE id = ?',
                    (stamp, campaign_id))
         result = dict(db.execute('SELECT * FROM automation_runs WHERE id = ?', (run_id,)).fetchone())

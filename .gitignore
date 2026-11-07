@@ -1,6 +1,7 @@
 .env
 .env.*
 !.env.example
+!.env.demo.example
 .data/
 .venv/
 __pycache__/
@@ -17,3 +18,7 @@ test-results/
 artifacts/
 .backups/
 .dev.vars
+
+.data-demo/
+.venv-ai/
+.models/
