@@ -1,0 +1,21 @@
+# Use em um servidor dedicado à demo, com portas 80/443 disponíveis.
+services:
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on:
+      demo:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      AUTOPOSTS_DOMAIN: ${AUTOPOSTS_DOMAIN:?Configure o hostname HTTPS do backend em .env.demo}
+      ACME_EMAIL: ${ACME_EMAIL:?Configure ACME_EMAIL em .env.demo}
+    volumes:
+      - ./edicoes/demonstracao/Caddyfile:/etc/caddy/Caddyfile:ro
+      - demo-caddy-data:/data
+      - demo-caddy-config:/config
+volumes:
+  demo-caddy-data:
+  demo-caddy-config:
